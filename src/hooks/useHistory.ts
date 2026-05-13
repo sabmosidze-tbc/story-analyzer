@@ -29,7 +29,10 @@ export function useHistory() {
         storyText.trim().split(/\s+/).slice(0, 6).join(" ") +
         (storyText.trim().split(/\s+/).length > 6 ? "…" : "");
       const entry: StoryEntry = {
-        id: crypto.randomUUID(),
+        id:
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         title,
         storyText,
         analysis,

@@ -29,19 +29,25 @@ export default function AnalysisCard({ title, content, accentColor = "violet" }:
     URL.revokeObjectURL(url);
   };
 
-  const colorMap: Record<string, string> = {
-    violet: "border-violet-400 bg-violet-50 text-violet-700",
-    blue: "border-blue-400 bg-blue-50 text-blue-700",
-    emerald: "border-emerald-400 bg-emerald-50 text-emerald-700",
+  const accentBorderMap: Record<string, string> = {
+    violet: "border-violet-400",
+    blue: "border-blue-400",
+    emerald: "border-emerald-400",
   };
-  const headerColor = colorMap[accentColor] ?? colorMap.violet;
+  const accentBarMap: Record<string, string> = {
+    violet: "bg-violet-500",
+    blue: "bg-blue-500",
+    emerald: "bg-emerald-500",
+  };
+  const borderClass = accentBorderMap[accentColor] ?? accentBorderMap.violet;
+  const barClass = accentBarMap[accentColor] ?? accentBarMap.violet;
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
       {/* Card header */}
-      <div className={`flex items-center justify-between px-6 py-4 border-b ${headerColor.split(" ")[0]} border-opacity-30 bg-gradient-to-r from-white to-slate-50`}>
+      <div className={`flex items-center justify-between px-6 py-4 border-b ${borderClass} border-opacity-30 bg-gradient-to-r from-white to-slate-50`}>
         <div className="flex items-center gap-2.5">
-          <div className={`w-2 h-6 rounded-full ${accentColor === "violet" ? "bg-violet-500" : accentColor === "blue" ? "bg-blue-500" : "bg-emerald-500"}`} />
+          <div className={`w-2 h-6 rounded-full ${barClass}`} />
           <h2 className="font-bold text-slate-800 text-base">{title}</h2>
         </div>
         <div className="flex gap-2">
