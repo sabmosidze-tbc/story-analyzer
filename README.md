@@ -1,36 +1,82 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# StoryAnalyzer
+
+A modern web application that helps QA testers analyze Jira stories and requirements. Paste any story, ticket description, or acceptance criteria and instantly receive a structured QA breakdown.
+
+## Features
+
+- **Story Explanation** — Simple explanation, business purpose, user goal, system changes, and ambiguous requirements
+- **Desk Check Scenarios & Edge Cases** — Happy path, negative scenarios, edge cases, validation, permissions, and questions to discuss with developers
+- **Unit & Integration Test Suggestions** — Clearly separated test ideas with automation vs. manual notes and developer discussion points
+- **History sidebar** — All analyses are saved locally in the browser; reopen, rename, or delete previous analyses
+- **Copy & Export** — Copy individual sections or all output; export as Markdown
+- **AI-powered** — Uses OpenAI `gpt-4o-mini` when an API key is configured, with a smart rule-based fallback for demo/offline use
 
 ## Getting Started
 
-First, run the development server:
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. (Optional) Configure OpenAI API key
+
+Copy the example env file and add your key for AI-powered analysis:
+
+```bash
+cp .env.local.example .env.local
+# Edit .env.local and set OPENAI_API_KEY=your_key_here
+```
+
+If no key is set, the app runs in **demo mode** using a rule-based analyzer that is still grounded in your input text.
+
+### 3. Run the development server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 4. Build for production
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm start
+```
 
-## Learn More
+## Tech Stack
 
-To learn more about Next.js, take a look at the following resources:
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 14+ (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS + `@tailwindcss/typography` |
+| Icons | `lucide-react` |
+| Markdown | `react-markdown` |
+| AI | OpenAI `gpt-4o-mini` (optional) |
+| Persistence | Browser `localStorage` |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Project Structure
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+src/
+├── app/
+│   ├── api/analyze/route.ts   # Analysis API (OpenAI or rule-based)
+│   ├── layout.tsx
+│   └── page.tsx               # Main app page
+├── components/
+│   ├── AnalysisCard.tsx       # Individual analysis block with copy/export
+│   ├── EmptyState.tsx         # Empty state shown before first analysis
+│   ├── Header.tsx             # Mobile top bar
+│   ├── Sidebar.tsx            # History sidebar
+│   └── StoryInput.tsx         # Story input form
+├── hooks/
+│   └── useHistory.ts          # localStorage persistence hook
+└── types/
+    └── index.ts               # TypeScript interfaces
+```
 
-## Deploy on Vercel
+## Deployment
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Deploy to [Vercel](https://vercel.com) in one click — just set the `OPENAI_API_KEY` environment variable in your project settings.

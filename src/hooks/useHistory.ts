@@ -5,6 +5,14 @@ import { StoryEntry, Analysis } from "@/types";
 
 const STORAGE_KEY = "story-analyzer-history";
 
+function generateId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
 export function useHistory() {
   const [entries, setEntries] = useState<StoryEntry[]>([]);
 
@@ -29,10 +37,7 @@ export function useHistory() {
         storyText.trim().split(/\s+/).slice(0, 6).join(" ") +
         (storyText.trim().split(/\s+/).length > 6 ? "…" : "");
       const entry: StoryEntry = {
-        id:
-          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-            ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: generateId(),
         title,
         storyText,
         analysis,
