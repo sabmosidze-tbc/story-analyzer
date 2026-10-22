@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { StoryEntry } from "@/types";
-import { Pencil, Trash2, Check, X, Plus, ChevronLeft, BookOpen } from "lucide-react";
+import { Pencil, Trash2, Check, X, Plus, ChevronLeft, BookOpen, Sun, Moon, LogOut } from "lucide-react";
+import { useSession, signOut } from "next-auth/react";
+import { useTheme } from "@/hooks/useTheme";
 
 interface SidebarProps {
   entries: StoryEntry[];
@@ -22,6 +24,8 @@ function formatDate(iso: string) {
 export default function Sidebar({ entries, selectedId, onSelect, onNew, onRename, onDelete, isOpen, onClose }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const { theme, toggleTheme } = useTheme();
+  const { data: session } = useSession();
 
   const startEdit = (e: React.MouseEvent, entry: StoryEntry) => {
     e.stopPropagation();
@@ -58,6 +62,13 @@ export default function Sidebar({ entries, selectedId, onSelect, onNew, onRename
           </div>
           <button onClick={onClose} className="lg:hidden text-slate-400 hover:text-white p-1 rounded">
             <ChevronLeft className="w-5 h-5" />
+          </button>
+          <button
+            onClick={toggleTheme}
+            className="hidden lg:flex text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-700 transition-colors"
+            aria-label="Toggle dark mode"
+          >
+            {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
         </div>
 
@@ -139,7 +150,26 @@ export default function Sidebar({ entries, selectedId, onSelect, onNew, onRename
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 border-t border-slate-700">
+        <div className="px-5 py-3 border-t border-slate-700 space-y-2">
+          {session?.user && (
+            <div className="flex items-center gap-2">
+              {session.user.image && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={session.user.image} alt="" className="w-6 h-6 rounded-full border border-slate-600" />
+              )}
+              <span className="flex-1 min-w-0 text-xs text-slate-300 truncate" title="Copilot requests use this GitHub account">
+                {session.user.name ?? session.user.email ?? "GitHub user"}
+              </span>
+              <button
+                onClick={() => signOut({ redirectTo: "/login" })}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded text-slate-400 hover:text-red-400 hover:bg-slate-700 transition-colors"
+                title="Sign out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign out
+              </button>
+            </div>
+          )}
           <p className="text-xs text-slate-500">Analyses saved locally in your browser</p>
         </div>
       </aside>
