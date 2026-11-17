@@ -2,53 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { getGitHubAccessToken, NOT_SIGNED_IN } from "@/lib/github-session";
 import { EpicStory } from "@/types";
 
-const EPIC_SYSTEM_PROMPT = `You are a senior QA engineer synthesizing a rich context document about a Jira epic and all its child stories. This will be injected into individual story analysis prompts so the AI has full cross-story awareness.
+const EPIC_SYSTEM_PROMPT = `You are a senior QA lead preparing to test a Jira epic. You receive the epic and all its child issues (key, type, status, description).
+Produce a test-oriented understanding of the WHOLE epic: how stories fit together, what must be tested across stories, and what is unclear.
 
-Your output must be a JSON object with exactly this structure:
+Return ONLY one JSON object (no markdown fences, no prose) with exactly these keys:
 {
-  "contextBlock": "rich, detailed context block — see instructions below"
+  "goal": "2-3 sentences: what the epic delivers and the business end state",
+  "scope": ["capability delivered by the epic", "..."],
+  "outOfScope": ["only if stated or clearly implied; else []"],
+  "businessRules": [{ "rule": "specific rule incl. limits/values", "stories": ["KEY-1"] }],
+  "dataEntities": [{ "name": "table/entity/field group", "notes": "fields, states, how stories change it", "stories": ["KEY-1"] }],
+  "storyNotes": [{ "key": "KEY-1", "role": "one line: what this story contributes", "dependsOn": ["KEY-2"], "risk": "high|medium|low", "riskReason": "why, one short phrase" }],
+  "e2eScenarios": [{ "id": "E2E1", "title": "flow spanning stories", "stories": ["KEY-1","KEY-2"], "priority": "high|medium|low", "steps": ["concrete step"], "expected": ["observable result"] }],
+  "integrationRisks": [{ "title": "short", "stories": ["KEY-1","KEY-2"], "why": "how the interaction can break", "severity": "high|medium|low" }],
+  "regression": ["existing behaviour that could break and should be re-tested"],
+  "questions": [{ "question": "gap/contradiction to ask the BA", "stories": ["KEY-1"] }],
+  "prerequisites": ["data, config, access or service state needed before testing"],
+  "contextBlock": "dense plain-text summary (max ~5000 chars) for another AI analyzing ONE story of this epic: goal, per-story one-liners with status, shared rules, data model, cross-story constraints. Lists and key:value, no filler."
 }
 
-For "contextBlock" — write a detailed, structured block optimized for AI consumption. This is the ONLY output. There is no separate human document. Make it as rich as possible — up to 6000 characters. Include:
-
-EPIC GOAL (2-3 sentences): What this epic is building, the business goal, end state.
-
-STORIES ALREADY BUILT (one paragraph each):
-- Story key + title + status
-- What it implemented (specific features, logic, APIs, UI)
-- Which database tables/fields it touched and what changed
-- Business rules or validations it introduced
-- Any known constraints, edge cases, or gotchas documented in the story
-
-STORIES IN PROGRESS (one paragraph each, same format as above)
-
-STORIES NOT YET STARTED (one line each: key + title + what it will likely do based on the epic)
-
-DATA MODELS & ENTITIES:
-For every table/entity touched across the epic:
-- Table name, key fields, field types if known
-- Relationships (foreign keys, 1:N, etc.)
-- What state the data is in before and after the epic is complete
-
-CROSS-STORY BUSINESS RULES & CONSTRAINTS:
-List every business rule, validation, or architectural constraint that applies to more than one story. Be specific — name the rule, what it checks, and what happens when violated.
-
-CROSS-STORY INTEGRATION RISKS & EDGE CASES:
-Scenarios where two or more stories interact and could cause bugs. Race conditions, ordering dependencies, shared state, data consistency risks.
-
-TEST ENVIRONMENT PREREQUISITES:
-Specific data, configuration, permissions, and service state needed before testing any story in this epic.
-
-Be dense. Use abbreviations. Prefer lists and key:value format over prose. Every sentence must be testable or actionable — no filler.`;
-
-
-interface EpicAnalyzeBody {
-  epicKey: string;
-  epicSummary: string;
-  stories: EpicStory[];
-  model?: string;
-}
-
+Rules:
+- storyNotes: one entry for EVERY child issue given, same keys.
+- e2eScenarios: 3-8 flows that cross at least two stories; ordered by priority. Each step must be executable by a tester.
+- Use only the given keys in "stories"/"dependsOn". Do not invent features, values or rules; when info is missing, add a question instead.
+- Be specific (names, values, statuses from the text). No generic QA advice.`;
 const ALLOWED_PREFIXES = ["openai/", "anthropic/", "google/", "deepseek/", "mistral-ai/", "microsoft/", "meta/", "ai21-labs/", "cohere/", "mistral/", "xai/", "copilot/"];
 const MODEL_FORMAT_RE = /^[\w.\-]+\/[\w.\-]+$|^[\w.\-]+$/;
 
@@ -74,31 +51,42 @@ function makeSseResponse(generator: (ctrl: ReadableStreamDefaultController) => P
   });
 }
 
-function buildUserMessage(epicKey: string, epicSummary: string, stories: EpicStory[]): string {
-  const lines: string[] = [
-    `Epic: ${epicKey} — "${epicSummary}"`,
-    `Total child stories: ${stories.length}`,
-    "",
-    "=== CHILD STORIES ===",
-    "",
-  ];
-
-  for (const s of stories) {
-    lines.push(`[${s.key}] (${s.status}) ${s.summary}`);
-    if (s.description && s.description !== "(no description)") {
-      // Include full description — this is the deep analysis pass
-      lines.push(s.description.slice(0, 1500)); // cap at 1500 chars per story
-    }
-    lines.push("");
-  }
-
-  return lines.join("\n");
+interface EpicAnalyzeBody {
+  epicKey: string;
+  epicSummary: string;
+  epicDescription?: string;
+  stories: EpicStory[];
+  model?: string;
 }
 
+/** Fit all stories into ~120k chars: short descriptions stay whole, long ones share the rest. */
+function buildUserMessage(epicKey: string, epicSummary: string, epicDescription: string, stories: EpicStory[]): string {
+  const BUDGET = 120_000;
+  const epicDesc = epicDescription.slice(0, 8000);
+  // Highest per-story cap that keeps the total within budget (short descriptions stay whole).
+  const room = Math.max(stories.length * 400, BUDGET - epicDesc.length);
+  const lens = stories.map((s) => s.description?.trim().length ?? 0).sort((a, b) => a - b);
+  let per = Infinity, used = 0;
+  for (let i = 0; i < lens.length; i++) {
+    const left = lens.length - i;
+    if (used + lens[i] * left > room) { per = Math.floor((room - used) / left); break; }
+    used += lens[i];
+  }
+  const lines: string[] = [`EPIC ${epicKey}: ${epicSummary}`];
+  if (epicDesc) lines.push("", "Epic description:", epicDesc);
+  lines.push("", `=== ${stories.length} CHILD ISSUES ===`);
+  for (const s of stories) {
+    lines.push("", `[${s.key}] (${s.type ?? "Story"} · ${s.status}) ${s.summary}`);
+    const d = s.description?.trim();
+    if (d) lines.push(d.length > per ? d.slice(0, per) + " …[truncated]" : d);
+  }
+  return lines.join("\n");
+}
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as EpicAnalyzeBody;
     const { epicKey, epicSummary, stories } = body;
+    const epicDescription = typeof body.epicDescription === "string" ? body.epicDescription : "";
     const rawModel = body.model;
     const model: string = isAllowedModel(rawModel) ? rawModel : "openai/gpt-4o-mini";
 
@@ -106,7 +94,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "epicKey and stories are required." }, { status: 400 });
     }
 
-    const userMessage = buildUserMessage(epicKey, epicSummary, stories);
+    const userMessage = buildUserMessage(epicKey, epicSummary, epicDescription, stories);
 
     // ── GitHub Copilot path (default): official Copilot SDK ──────────────────
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -142,7 +130,7 @@ export async function POST(req: NextRequest) {
       return makeSseResponse(async (ctrl) => {
         try {
           const stream = anthropic.messages.stream({
-            model: modelId, max_tokens: 8192, system: EPIC_SYSTEM_PROMPT,
+            model: modelId, max_tokens: 16000, system: EPIC_SYSTEM_PROMPT,
             messages: [{ role: "user", content: userMessage }],
           });
           for await (const chunk of stream) {

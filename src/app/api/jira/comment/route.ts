@@ -61,6 +61,7 @@ function extractAdfText(node: unknown): string {
   const n = node as Record<string, unknown>;
   const parts: string[] = [];
   if (n.type === "text" && typeof n.text === "string") parts.push(n.text);
+  if (n.type === "status" && n.attrs && typeof (n.attrs as { text?: unknown }).text === "string") parts.push((n.attrs as { text: string }).text);
   if (Array.isArray(n.content)) {
     for (const child of n.content) parts.push(extractAdfText(child));
   }
@@ -94,13 +95,18 @@ export async function POST(req: NextRequest) {
   const key     = String(body.key     ?? "");
   const title   = String(body.title   ?? "");
   const content = String(body.content ?? "");
+  // Callers can send a ready-made ADF document instead of markdown (richer formatting).
+  const adf = body.adf && typeof body.adf === "object" && (body.adf as { type?: unknown }).type === "doc"
+    ? (body.adf as { type: "doc"; version: 1; content: unknown[] })
+    : null;
 
   if (!key || !/^[A-Z]{2,10}-\d+$/.test(key)) {
     return NextResponse.json({ error: "Invalid Jira key" }, { status: 400 });
   }
-  if (!title || !content) {
+  if (!adf && (!title || !content)) {
     return NextResponse.json({ error: "Missing title or content" }, { status: 400 });
   }
+  const payload = adf ? { body: adf } : markdownToAdf(title, content);
 
   try {
     const auth = Buffer.from(`${email}:${token}`).toString("base64");
@@ -115,7 +121,7 @@ export async function POST(req: NextRequest) {
         const listData = await listRes.json() as {
           comments: Array<{ author: { emailAddress?: string }; body: unknown }>;
         };
-        const newNorm = normalizeForCompare(`${title} ${content}`);
+        const newNorm = normalizeForCompare(extractAdfText(payload.body));
         for (const comment of listData.comments) {
           if (comment.author?.emailAddress !== email) continue;
           const existNorm = normalizeForCompare(extractAdfText(comment.body));
@@ -133,7 +139,7 @@ export async function POST(req: NextRequest) {
         "Content-Type":  "application/json",
         Accept:          "application/json",
       },
-      body: JSON.stringify(markdownToAdf(title, content)),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
@@ -145,7 +151,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await res.json() as { id: string; created: string };
-    return NextResponse.json({ id: data.id, created: data.created });
+    return NextResponse.json({ id: data.id, created: data.created, url: `${base.replace(/\/$/, "")}/browse/${key}?focusedCommentId=${data.id}` });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to connect to Jira" },

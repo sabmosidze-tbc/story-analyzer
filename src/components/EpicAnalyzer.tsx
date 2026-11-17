@@ -1,560 +1,426 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Loader2, Trash2, RefreshCw, BookOpen, RotateCcw, AlertCircle, CheckCircle2, Clock, ChevronRight, XCircle } from "lucide-react";
-import { EpicContext, EpicStory } from "@/types";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { AlertTriangle, BookOpen, ChevronRight, ExternalLink, Loader2, RefreshCw, Sparkles, Square, Trash2, XCircle } from "lucide-react";
+import type { EpicContext, EpicStory, StoryEntry } from "@/types";
 import { useEpicLibrary } from "@/hooks/useEpicLibrary";
 import { useCopilotModels } from "@/hooks/useCopilotModels";
 import JiraBoardBadge from "@/components/JiraBoardBadge";
+import { epicDrift, parseEpicOutput, storyHash, storyProgress } from "@/lib/epic";
+import { ContextTab, NeedsAnalysis, OverviewTab, StoriesTab, StrategyTab } from "@/components/EpicTabs";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+interface LoadedEpic { key: string; summary: string; description: string; browseUrl?: string; stories: EpicStory[] }
+type Tab = "stories" | "overview" | "strategy" | "context";
 
-function parseEpicAIOutput(raw: string): { contextBlock: string; overviewDocument: string } | null {
-  try {
-    const parsed = JSON.parse(raw) as { contextBlock?: string; overviewDocument?: string };
-    if (parsed.contextBlock) return { contextBlock: parsed.contextBlock, overviewDocument: parsed.overviewDocument ?? "" };
-  } catch { /* not pure JSON — try extracting from markdown fences */ }
+const KEY_RE = /^[A-Z][A-Z0-9]{1,9}-\d+$/;
 
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    try {
-      const parsed = JSON.parse(fenceMatch[1]) as { contextBlock?: string; overviewDocument?: string };
-      if (parsed.contextBlock) return { contextBlock: parsed.contextBlock, overviewDocument: parsed.overviewDocument ?? "" };
-    } catch { /* fall through */ }
-  }
-  return null;
+function ago(iso?: string): string {
+  if (!iso) return "";
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : `${d} days ago`;
 }
 
-function daysAgo(iso: string): number {
-  return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-}
-
-// ── Main Component ────────────────────────────────────────────────────────────
-
-export default function EpicAnalyzer() {
-  const { epics, saveEpic, deleteEpic } = useEpicLibrary();
-
-  // Input / fetch state
-  const [epicInput, setEpicInput] = useState("");
-  const [fetchStatus, setFetchStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const [fetchedStories, setFetchedStories] = useState<EpicStory[] | null>(null);
-  const [fetchedEpicKey, setFetchedEpicKey] = useState<string | null>(null);
-  const [fetchedEpicSummary, setFetchedEpicSummary] = useState<string>("");
-  const [fetchedBrowseUrl, setFetchedBrowseUrl] = useState<string | null>(null);
-
-  // Auto-check: debounced type validation before user clicks Load
-  const [autoCheck, setAutoCheck] = useState<"idle" | "checking" | "ok" | "not-epic">("idle");
-  const [autoCheckError, setAutoCheckError] = useState<string | null>(null);
-  const autoCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Analysis state
-  const [analyzeStatus, setAnalyzeStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-  const [streamBuffer, setStreamBuffer] = useState<string>("");
-
-  // View state
-  const [viewingEpicKey, setViewingEpicKey] = useState<string | null>(null);
+export default function EpicAnalyzer({ entries, analyzingKeys, onOpenStory, onAnalyzeStory }: {
+  entries: StoryEntry[];
+  analyzingKeys: string[];
+  onOpenStory: (entryId: string) => void;
+  onAnalyzeStory: (key: string) => Promise<string | null>;
+}) {
+  const { epics, saveEpic, deleteEpic, updateEpicStories } = useEpicLibrary();
   const { models, model: modelId, setModel: setModelId } = useCopilotModels();
 
+  const [pickedKey, setSelectedKey] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("stories");
+
+  // Load input
+  const [epicInput, setEpicInput] = useState("");
+  const [autoCheck, setAutoCheck] = useState<"idle" | "checking" | "ok" | "not-epic">("idle");
+  const [autoCheckError, setAutoCheckError] = useState<string | null>(null);
+  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // AI analysis
+  const [analyzingEpic, setAnalyzingEpic] = useState<string | null>(null);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [streamChars, setStreamChars] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
 
-  // ── Debounced auto-check: validate ticket type as user types ──────────────
+  // Default to the most recent epic.
+  // "" means you closed it; null means nothing picked yet, so the first epic opens
+  const selectedKey = pickedKey === "" ? null : pickedKey && epics.some((e) => e.epicKey === pickedKey) ? pickedKey : epics[0]?.epicKey ?? null;
+  const selected = selectedKey ? epics.find((e) => e.epicKey === selectedKey) ?? null : null;
+
+  // ── Debounced check that the typed key is an Epic ──────────────────────────
   useEffect(() => {
     const key = epicInput.trim().toUpperCase();
-    const isValidFormat = /^[A-Z]{2,10}-\d+$/.test(key);
-
-    if (!isValidFormat) {
-      setAutoCheck("idle");
-      setAutoCheckError(null);
-      if (autoCheckTimerRef.current) clearTimeout(autoCheckTimerRef.current);
-      return;
-    }
-
-    // Don't re-check if already loaded
-    if (fetchedEpicKey === key && fetchedStories !== null) return;
-
-    setAutoCheck("checking");
-    setAutoCheckError(null);
-    if (autoCheckTimerRef.current) clearTimeout(autoCheckTimerRef.current);
-
-    autoCheckTimerRef.current = setTimeout(async () => {
+    if (!KEY_RE.test(key)) return;
+    const t = setTimeout(async () => {
       try {
         const res = await fetch(`/api/jira/fetch?key=${encodeURIComponent(key)}`);
         const data = await res.json() as { issueType?: string; error?: string };
-        if (!res.ok) {
-          setAutoCheck("not-epic");
-          setAutoCheckError(data.error ?? "Failed to check ticket");
-          return;
-        }
+        if (!res.ok) { setAutoCheck("not-epic"); setAutoCheckError(data.error ?? "Could not check the ticket"); return; }
         if (data.issueType?.toLowerCase() !== "epic") {
           setAutoCheck("not-epic");
-          setAutoCheckError(`${key} is a "${data.issueType ?? "Unknown"}" ticket, not an Epic.`);
-        } else {
-          setAutoCheck("ok");
-          setAutoCheckError(null);
-        }
-      } catch {
-        // Silent — don't block user if check fails
-        setAutoCheck("idle");
-      }
-    }, 650);
-
-    return () => { if (autoCheckTimerRef.current) clearTimeout(autoCheckTimerRef.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+          setAutoCheckError(`${key} is a ${data.issueType ?? "non-epic"}, not an Epic.`);
+        } else setAutoCheck("ok");
+      } catch { setAutoCheck("idle"); }
+    }, 600);
+    return () => clearTimeout(t);
   }, [epicInput]);
 
-  // ── Fetch epic from Jira ────────────────────────────────────────────────────
-  const handleFetch = useCallback(async () => {
-    const key = epicInput.trim().toUpperCase();
-    if (!key || !/^[A-Z]{2,10}-\d+$/.test(key)) {
-      setFetchError("Enter a valid Jira key, e.g. PROJ-123");
-      return;
-    }
-
-    setFetchStatus("loading");
-    setFetchError(null);
-    setFetchedStories(null);
-    setFetchedEpicKey(null);
-
+  // ── Jira ───────────────────────────────────────────────────────────────────
+  const fetchEpic = useCallback(async (key: string): Promise<LoadedEpic | null> => {
+    setLoadingKey(key);
+    setLoadError(null);
     try {
       const res = await fetch(`/api/jira/epic-context?key=${encodeURIComponent(key)}`);
-      const data = await res.json() as { error?: string; epicKey?: string; epicSummary?: string; browseUrl?: string; stories?: EpicStory[] };
-
-      if (!res.ok) {
-        setFetchError(data.error ?? "Failed to load epic");
-        setFetchStatus("error");
-        return;
-      }
-
-      setFetchedEpicKey(data.epicKey ?? key);
-      setFetchedEpicSummary(data.epicSummary ?? "");
-      setFetchedBrowseUrl(data.browseUrl ?? null);
-      setFetchedStories(data.stories ?? []);
-      setFetchStatus("idle");
+      const data = await res.json() as { error?: string; epicKey?: string; epicSummary?: string; epicDescription?: string; browseUrl?: string; stories?: EpicStory[] };
+      if (!res.ok) { setLoadError(data.error ?? "Failed to load epic"); return null; }
+      return { key: data.epicKey ?? key, summary: data.epicSummary ?? "", description: data.epicDescription ?? "", browseUrl: data.browseUrl, stories: data.stories ?? [] };
     } catch {
-      setFetchError("Network error — check your connection");
-      setFetchStatus("error");
+      setLoadError("Network error — check your connection");
+      return null;
+    } finally {
+      setLoadingKey(null);
     }
-  }, [epicInput]);
+  }, []);
 
-  // ── Run AI analysis (new or re-analyze) ───────────────────────────────────
-  const handleAnalyze = useCallback(async (
-    epicKey: string,
-    epicSummary: string,
-    stories: EpicStory[],
-  ) => {
-    if (analyzeStatus === "loading") {
-      abortRef.current?.abort();
-      return;
+  /** Load from Jira and store; an existing epic keeps its analysis. */
+  const syncEpic = useCallback(async (key: string): Promise<LoadedEpic | null> => {
+    const loaded = await fetchEpic(key);
+    if (!loaded) return null;
+    const patch = { stories: loaded.stories, epicSummary: loaded.summary, epicDescription: loaded.description, browseUrl: loaded.browseUrl };
+    if (epics.some((e) => e.epicKey === loaded.key)) updateEpicStories(loaded.key, patch);
+    else saveEpic({
+      epicKey: loaded.key, epicSummary: loaded.summary, epicDescription: loaded.description, browseUrl: loaded.browseUrl,
+      storyCount: loaded.stories.length, analyzedStoryKeys: [], analyzedAt: "", contextBlock: "",
+      stories: loaded.stories, storiesFetchedAt: new Date().toISOString(),
+    });
+    return loaded;
+  }, [epics, fetchEpic, saveEpic, updateEpicStories]);
+
+  const handleLoad = async () => {
+    const key = epicInput.trim().toUpperCase();
+    if (!KEY_RE.test(key)) { setLoadError("Enter a valid Jira key, e.g. PROJ-123"); return; }
+    if (autoCheck === "not-epic") return;
+    const loaded = await syncEpic(key);
+    if (loaded) {
+      setSelectedKey(loaded.key);
+      setTab("stories");
+      setEpicInput("");
+      setAutoCheck("idle");
     }
+  };
 
-    setAnalyzeStatus("loading");
+  // ── AI analysis ────────────────────────────────────────────────────────────
+  const analyze = useCallback(async (epic: EpicContext) => {
+    if (analyzingEpic) { abortRef.current?.abort(); return; }
     setAnalyzeError(null);
-    setStreamBuffer("");
-
+    setStreamChars(0);
+    setAnalyzingEpic(epic.epicKey);
     const abort = new AbortController();
     abortRef.current = abort;
-
     try {
+      const loaded = await syncEpic(epic.epicKey);
+      if (!loaded || abort.signal.aborted) return;
+      if (!loaded.stories.length) { setAnalyzeError("This epic has no child issues in Jira."); return; }
+
       const res = await fetch("/api/analyze/epic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abort.signal,
-        body: JSON.stringify({ epicKey, epicSummary, stories, model: modelId }),
+        body: JSON.stringify({ epicKey: loaded.key, epicSummary: loaded.summary, epicDescription: loaded.description, stories: loaded.stories, model: modelId }),
       });
-
       if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({})) as { error?: string };
         setAnalyzeError(err.error ?? "Analysis failed");
-        setAnalyzeStatus("error");
         return;
       }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
-      let accumulated = "";
-
-      while (true) {
+      let buffer = "", text = "";
+      for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(line.slice(6)) as { type: string; text?: string; error?: string };
-            if (event.type === "chunk" && event.text) {
-              accumulated += event.text;
-              setStreamBuffer(accumulated);
-            } else if (event.type === "done") {
-              // Parse final output
-              const parsed = parseEpicAIOutput(accumulated);
-              if (parsed) {
-                const ctx: EpicContext = {
-                  epicKey,
-                  epicSummary,
-                  browseUrl: fetchedBrowseUrl ?? undefined,
-                  storyCount: stories.length,
-                  analyzedStoryKeys: stories.map((s) => s.key),
-                  analyzedAt: new Date().toISOString(),
-                  contextBlock: parsed.contextBlock,
-                  overviewDocument: parsed.overviewDocument,
-                };
-                saveEpic(ctx);
-                // Collapse the stories panel and clear the input — analysis is done
-                setFetchedStories(null);
-                setFetchedEpicKey(null);
-                setFetchedBrowseUrl(null);
-                setEpicInput("");
-                setAutoCheck("idle");
-                setAutoCheckError(null);
-                setViewingEpicKey(epicKey); // auto-expand in library
-              } else {
-                setAnalyzeError("AI returned output in unexpected format. Please retry.");
-                setAnalyzeStatus("error");
-                return;
-              }
-            } else if (event.type === "error") {
-              setAnalyzeError(event.error ?? "Analysis failed");
-              setAnalyzeStatus("error");
-              return;
-            }
-          } catch { /* skip malformed lines */ }
+          let ev: { type: string; text?: string; error?: string };
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.type === "chunk" && ev.text) { text += ev.text; setStreamChars(text.length); }
+          else if (ev.type === "error") { setAnalyzeError(ev.error ?? "Analysis failed"); return; }
+          else if (ev.type === "done") {
+            const parsed = parseEpicOutput(text);
+            if (!parsed) { setAnalyzeError("The AI answer could not be read. Try again or pick another model."); return; }
+            saveEpic({
+              epicKey: loaded.key, epicSummary: loaded.summary, epicDescription: loaded.description, browseUrl: loaded.browseUrl,
+              storyCount: loaded.stories.length,
+              analyzedStoryKeys: loaded.stories.map((s) => s.key),
+              analyzedAt: new Date().toISOString(),
+              contextBlock: parsed.contextBlock,
+              analysis: parsed.analysis,
+              stories: loaded.stories,
+              storiesFetchedAt: new Date().toISOString(),
+              analyzedHashes: Object.fromEntries(loaded.stories.map((s) => [s.key, storyHash(s)])),
+            });
+            setTab((t) => (t === "stories" ? "overview" : t));
+          }
         }
       }
-
-      setAnalyzeStatus("idle");
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        setAnalyzeError(err instanceof Error ? err.message : "Analysis failed");
-        setAnalyzeStatus("error");
-      } else {
-        setAnalyzeStatus("idle");
-      }
+      if ((err as Error).name !== "AbortError") setAnalyzeError(err instanceof Error ? err.message : "Analysis failed");
+    } finally {
+      setAnalyzingEpic(null);
+      abortRef.current = null;
     }
-  }, [analyzeStatus, modelId, saveEpic, fetchedBrowseUrl]);
+  }, [analyzingEpic, modelId, saveEpic, syncEpic]);
 
-  // ── Re-analyze an existing epic ────────────────────────────────────────────
-  const handleReAnalyze = useCallback(async (existing: EpicContext) => {
-    if (!fetchedStories || fetchedEpicKey !== existing.epicKey) {
-      // Need to re-fetch first
-      setEpicInput(existing.epicKey);
-      setFetchError("Click 'Load Stories' first to refresh the story list before re-analyzing.");
-      return;
-    }
-    await handleAnalyze(existing.epicKey, existing.epicSummary, fetchedStories);
-  }, [fetchedStories, fetchedEpicKey, handleAnalyze]);
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const stats = useMemo(() => {
+    const stories = selected?.stories ?? [];
+    const ps = stories.map((s) => storyProgress(s.key, entries));
+    return {
+      total: stories.length,
+      analyzed: ps.filter((p) => p.analyzed).length,
+      failed: ps.filter((p) => p.state === "failed").length,
+      passed: ps.filter((p) => p.state === "passed").length,
+    };
+  }, [selected, entries]);
+  const drift = selected ? epicDrift(selected) : { added: [], changed: [], removed: [] };
+  const driftCount = drift.added.length + drift.changed.length + drift.removed.length;
+  const isAnalyzing = !!selected && analyzingEpic === selected.epicKey;
+  const isLoadingSelected = !!selected && loadingKey === selected.epicKey;
+  const hasAnalysis = !!selected?.analysis;
 
-  const viewingCtx = viewingEpicKey ? epics.find((e) => e.epicKey === viewingEpicKey) : null;
+  const typedKey = KEY_RE.test(epicInput.trim().toUpperCase()) ? epicInput.trim().toUpperCase() : null;
+
+  const TABS: { id: Tab; label: string }[] = [
+    { id: "stories", label: `Stories${stats.total ? ` (${stats.total})` : ""}` },
+    { id: "overview", label: "Overview" },
+    { id: "strategy", label: "Test strategy" },
+    { id: "context", label: "AI context" },
+  ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Epic Analyzer</h2>
-        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-          Analyze an entire epic to build context that automatically enriches your individual story analyses.
-        </p>
-      </div>
-
-      {/* ── Input card ──────────────────────────────────────────────────────── */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5 space-y-3">
-        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Load an epic from Jira</p>
-
-        {/* Dynamic detection banner — shown ABOVE the input as soon as a valid key format is typed */}
-        {(() => {
-          const detectedKey = /^[A-Z]{2,10}-\d+$/i.test(epicInput.trim()) ? epicInput.trim().toUpperCase() : null;
-          if (!detectedKey) return null;
-          if (fetchedStories && fetchedEpicKey === detectedKey) return null; // already loaded — banner shown below
-
-          const isNotEpic = autoCheck === "not-epic" || (fetchStatus === "error" && !!fetchError);
-          const errorMsg = autoCheckError ?? fetchError;
-          const isChecking = autoCheck === "checking";
-          const isOk = autoCheck === "ok";
-          const isFetchLoading = fetchStatus === ("loading" as string);
-          const canLoad = (isOk || autoCheck === "idle") && !isFetchLoading && !isNotEpic;
-
-          return (
-            <div className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border transition-colors ${
-              isNotEpic
-                ? "bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700"
-                : "bg-violet-50 dark:bg-violet-500/10 border-violet-300 dark:border-violet-600"
-            }`}>
-              {isChecking ? (
-                <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin text-violet-400" />
-              ) : isNotEpic ? (
-                <XCircle className="w-4 h-4 flex-shrink-0 text-red-500 dark:text-red-400" />
-              ) : (
-                <span className="text-xs font-semibold text-violet-500 dark:text-violet-400 flex-shrink-0 whitespace-nowrap">
-                  {isOk ? "Epic detected" : "Epic key detected"}
-                </span>
+    <div className="space-y-5">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Epics</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">See every story of an epic, its test progress, and what to test across stories.</p>
+        </div>
+        {/* Load an epic */}
+        <div className="relative w-full sm:w-auto">
+          <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-2 rounded-xl border bg-white dark:bg-slate-900 px-3 py-2 w-full sm:w-72 focus-within:ring-2 transition-colors ${autoCheck === "not-epic" ? "border-red-400 dark:border-red-500/70 focus-within:ring-red-500/40" : "border-slate-300 dark:border-slate-600 focus-within:ring-violet-500"}`}>
+              <BookOpen className="w-4 h-4 text-slate-400 flex-shrink-0" />
+              <input
+                value={epicInput}
+                onChange={(e) => {
+                  setEpicInput(e.target.value);
+                  setLoadError(null);
+                  setAutoCheckError(null);
+                  setAutoCheck(KEY_RE.test(e.target.value.trim().toUpperCase()) ? "checking" : "idle");
+                }}
+                onKeyDown={(e) => e.key === "Enter" && handleLoad()}
+                placeholder="Load epic, e.g. PROJ-100"
+                className="flex-1 min-w-0 bg-transparent text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none"
+              />
+              {autoCheck === "checking" && <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" />}
+              {autoCheck === "ok" && <span className="text-[10px] font-semibold text-violet-600 dark:text-violet-300">Epic</span>}
+              {autoCheck === "not-epic" && (
+                <button type="button" title="Clear" aria-label="Clear"
+                  onClick={() => { setEpicInput(""); setAutoCheck("idle"); setAutoCheckError(null); setLoadError(null); }}
+                  className="p-0.5 -mr-1 rounded-full text-red-500 hover:bg-red-50 dark:hover:bg-red-500/15">
+                  <XCircle className="w-4 h-4" />
+                </button>
               )}
-              <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 border ${
-                isNotEpic
-                  ? "text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-800/50 border-red-300 dark:border-red-600"
-                  : "text-violet-600 dark:text-violet-300 bg-violet-100 dark:bg-violet-500/20 border-violet-300 dark:border-violet-600"
-              }`}>
-                {detectedKey}
-              </span>
-              {isNotEpic && errorMsg && (
-                <span className="text-xs text-red-600 dark:text-red-400 flex-1 min-w-0 truncate">{errorMsg}</span>
-              )}
-              {isChecking && (
-                <span className="text-xs text-violet-400 flex-1">Checking ticket type…</span>
-              )}
-              <div className="flex-1" />
-              <button
-                onClick={handleFetch}
-                disabled={!canLoad}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-violet-500 hover:bg-violet-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors flex-shrink-0"
-              >
-                {isFetchLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                {isFetchLoading ? "Loading…" : "Load Epic"}
-              </button>
             </div>
-          );
-        })()}
-
-        {/* Plain input — full width, Enter triggers load */}
-        <input
-          className="w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-950 px-4 py-2.5 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
-          placeholder="Epic key, e.g. PROJ-100"
-          value={epicInput}
-          onChange={(e) => {
-            setEpicInput(e.target.value);
-            setFetchError(null);
-            setFetchedStories(null);
-            setFetchedEpicKey(null);
-            setFetchedBrowseUrl(null);
-            setAutoCheck("idle");
-            setAutoCheckError(null);
-          }}
-          onKeyDown={(e) => e.key === "Enter" && handleFetch()}
-        />
-
-        {/* Stories preview */}
-        {fetchedStories && fetchedEpicKey && (
-          <div className="space-y-3">
-            {/* Epic detected banner — purple, mirroring the "Jira issue detected" style */}
-            <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-violet-50 dark:bg-violet-500/10 border border-violet-300 dark:border-violet-700">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span className="text-xs font-semibold text-violet-500 dark:text-violet-400 flex-shrink-0">Epic detected</span>
-                <a
-                  href={`${typeof window !== "undefined" ? "" : ""}#`}
-                  className="flex items-center gap-1 font-mono text-xs font-bold text-violet-600 dark:text-violet-300 bg-violet-100 dark:bg-violet-500/20 border border-violet-300 dark:border-violet-600 px-2 py-0.5 rounded-full"
-                  onClick={(e) => e.preventDefault()}
-                >
-                  {fetchedEpicKey}
-                </a>
-                <span className="text-xs text-violet-600 dark:text-violet-300 truncate">{fetchedEpicSummary}</span>
-                <JiraBoardBadge jiraKey={fetchedEpicKey} />
-              </div>
-              <span className="text-xs text-violet-500 dark:text-violet-400 flex-shrink-0">
-                {fetchedStories.length} {fetchedStories.length === 1 ? "story" : "stories"}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-end">
-              {/* Model selector */}
-              <select
-                value={modelId ?? ""}
-                onChange={(e) => setModelId(e.target.value)}
-                className="text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500"
-              >
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Story list */}
-            {fetchedStories.length > 0 ? (
-              <div className="max-h-48 overflow-y-auto space-y-1 pr-1 tab-scroll">
-                {fetchedStories.map((s) => (
-                  <div key={s.key} className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-400 py-1 border-b border-slate-100 dark:border-slate-700/50 last:border-0">
-                    <span className="font-mono font-semibold text-violet-500 dark:text-violet-400 flex-shrink-0">{s.key}</span>
-                    <span className="flex-1">{s.summary}</span>
-                    <span className={`flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      /done|complete|closed/i.test(s.status)
-                        ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400"
-                        : /progress|active/i.test(s.status)
-                        ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400"
-                        : "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400"
-                    }`}>{s.status}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-slate-500 dark:text-slate-400 italic">No child stories found for this epic.</p>
-            )}
-
-            {fetchedStories.length > 0 && (
-              <button
-                onClick={() => handleAnalyze(fetchedEpicKey, fetchedEpicSummary, fetchedStories)}
-                disabled={analyzeStatus === "loading"}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-violet-500 hover:bg-violet-600 disabled:opacity-60 text-white text-sm font-medium transition-colors"
-              >
-                {analyzeStatus === "loading" ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing… (click to cancel)</>
-                ) : (
-                  <><BookOpen className="w-4 h-4" /> Analyze Epic Context</>
-                )}
-              </button>
-            )}
-
-            {analyzeStatus === "loading" && streamBuffer && (
-              <div className="mt-2 text-xs text-slate-400 dark:text-slate-500 italic truncate">
-                {streamBuffer.slice(-120)}
-              </div>
-            )}
-
-            {analyzeError && (
-              <div className="flex items-start gap-2 text-sm text-red-600 dark:text-red-400">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <span>{analyzeError}</span>
-              </div>
-            )}
+            <button
+              onClick={handleLoad}
+              disabled={!typedKey || autoCheck === "not-epic" || !!loadingKey}
+              className="flex items-center gap-1 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-sm font-medium"
+            >
+              {loadingKey && loadingKey === typedKey ? <Loader2 className="w-4 h-4 animate-spin" /> : <ChevronRight className="w-4 h-4" />} Load
+            </button>
           </div>
-        )}
+          {(autoCheckError || (loadError && !selected)) && (
+            // Floats under the input so the layout doesn't shift
+            <div role="alert" className="epic-flow-in absolute left-0 top-full mt-2 z-20 flex items-start gap-2 max-w-full sm:w-72 rounded-lg border border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-950/90 px-3 py-2 text-xs text-red-700 dark:text-red-300 shadow-lg backdrop-blur">
+              <span className="absolute -top-1 left-5 w-2 h-2 rotate-45 border-l border-t border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-950/90" />
+              <AlertTriangle className="w-3.5 h-3.5 mt-px flex-shrink-0" />
+              <span>{autoCheckError ?? loadError}</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* ── Epic Library ─────────────────────────────────────────────────────── */}
+      {/* Saved epics */}
       {epics.length > 0 && (
-        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5 space-y-3">
-          <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Saved Epics ({epics.length})</p>
-
-          {epics.map((epic) => {
-            const age = daysAgo(epic.analyzedAt);
-            const isStale = age > 7;
-            const isViewing = viewingEpicKey === epic.epicKey;
-
+        <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+          {epics.map((e) => {
+            const active = e.epicKey === selectedKey;
+            const busy = analyzingEpic === e.epicKey;
+            const count = e.stories?.length ?? e.storyCount;
             return (
-              <div key={epic.epicKey} className={`rounded-xl border p-4 space-y-2 transition-colors ${
-                isViewing
-                  ? "border-violet-400 dark:border-violet-600 bg-violet-50/50 dark:bg-violet-900/10"
-                  : "border-slate-200 dark:border-slate-700"
-              }`}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {epic.browseUrl ? (
-                        <a
-                          href={epic.browseUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-mono text-sm font-bold text-violet-500 dark:text-violet-400 hover:underline"
-                        >
-                          {epic.epicKey} ↗
-                        </a>
-                      ) : (
-                        <span className="font-mono text-sm font-bold text-violet-500 dark:text-violet-400">{epic.epicKey}</span>
-                      )}
-                      <JiraBoardBadge jiraKey={epic.epicKey} />
-                      {isStale && (
-                        <span className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 rounded">
-                          <Clock className="w-3 h-3" /> {age}d old
-                        </span>
-                      )}
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        {epic.storyCount} {epic.storyCount === 1 ? "story" : "stories"} · analyzed {new Date(epic.analyzedAt).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <p className="text-sm text-slate-700 dark:text-slate-300 mt-0.5 truncate">{epic.epicSummary}</p>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <button
-                      onClick={() => setViewingEpicKey(isViewing ? null : epic.epicKey)}
-                      title={isViewing ? "Collapse" : "View overview"}
-                      className="p-1.5 rounded-lg hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-500 dark:text-violet-400 transition-colors"
-                    >
-                      <BookOpen className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={async () => {
-                        const existing = epics.find((e) => e.epicKey === epic.epicKey);
-                        if (existing) await handleReAnalyze(existing);
-                      }}
-                      title="Re-analyze"
-                      className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        deleteEpic(epic.epicKey);
-                        if (viewingEpicKey === epic.epicKey) setViewingEpicKey(null);
-                      }}
-                      title="Delete"
-                      className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+              <div key={e.epicKey} role="button" tabIndex={0}
+                onClick={() => setSelectedKey(selectedKey === e.epicKey ? null : e.epicKey)}
+                onKeyDown={(ev) => (ev.key === "Enter" || ev.key === " ") && setSelectedKey(selectedKey === e.epicKey ? null : e.epicKey)}
+                className={`group relative rounded-xl border pl-3.5 pr-2 py-2.5 cursor-pointer transition-all overflow-hidden ${active
+                  ? "bg-violet-50 dark:bg-violet-500/10 border-violet-400 dark:border-violet-500/60 shadow-sm shadow-violet-500/10"
+                  : "bg-white dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 hover:border-violet-300 dark:hover:border-violet-500/40"}`}>
+                <span className={`absolute left-0 inset-y-0 w-1 ${active ? "bg-violet-500" : "bg-transparent group-hover:bg-violet-300/50"}`} />
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-bold text-violet-600 dark:text-violet-300 whitespace-nowrap">{e.epicKey}</span>
+                  {busy ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-violet-600 dark:text-violet-300"><Loader2 className="w-3 h-3 animate-spin" /> Analyzing</span>
+                  ) : e.contextBlock ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Analyzed</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400"><span className="w-1.5 h-1.5 rounded-full bg-slate-400" /> Not analyzed</span>
+                  )}
+                  <ChevronRight className={`w-4 h-4 ml-auto text-slate-400 transition-transform ${active ? "rotate-90 text-violet-500" : ""}`} />
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); if (confirm(`Remove ${e.epicKey} from your saved epics?`)) { deleteEpic(e.epicKey); if (active) setSelectedKey(""); } }}
+                    title="Remove from saved epics" aria-label={`Remove ${e.epicKey}`}
+                    className="p-1 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-
-                {/* Expanded view */}
-                {isViewing && viewingCtx && viewingCtx.epicKey === epic.epicKey && (
-                  <div className="mt-3 space-y-3 border-t border-slate-200 dark:border-slate-700 pt-3">
-                    {/* Context block — the full enriched context injected into child story analyses */}
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1.5">
-                        Context injected into story analyses
-                      </p>
-                      <pre className="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-950/50 rounded-lg p-3 whitespace-pre-wrap overflow-x-auto max-h-64 tab-scroll border border-slate-200 dark:border-slate-700">
-                        {viewingCtx.contextBlock}
-                      </pre>
-                    </div>
-
-                    {/* Legacy overview document — hidden if empty (new analyses won't have it) */}
-                    {viewingCtx.overviewDocument ? (
-                      <div>
-                        <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1.5">
-                          Overview document
-                        </p>
-                        <div className="text-sm text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-950/50 rounded-lg p-3 max-h-72 overflow-y-auto tab-scroll border border-slate-200 dark:border-slate-700 prose prose-sm dark:prose-invert max-w-none">
-                          {viewingCtx.overviewDocument.split("\n").map((line, i) => {
-                            if (line.startsWith("## ")) return <h3 key={i} className="font-bold text-slate-800 dark:text-slate-200 mt-3 mb-1">{line.slice(3)}</h3>;
-                            if (line.startsWith("### ")) return <h4 key={i} className="font-semibold text-slate-700 dark:text-slate-300 mt-2 mb-0.5 text-xs uppercase tracking-wide">{line.slice(4)}</h4>;
-                            if (line.startsWith("- ")) return <li key={i} className="ml-4 list-disc text-xs">{line.slice(2)}</li>;
-                            if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="font-semibold text-xs">{line.slice(2, -2)}</p>;
-                            if (line.trim() === "") return <div key={i} className="h-1.5" />;
-                            return <p key={i} className="text-xs leading-relaxed">{line}</p>;
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      This context is automatically used when you analyze a story from this epic.
-                    </div>
-
-                    <button
-                      onClick={() => setViewingEpicKey(null)}
-                      className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
-                    >
-                      <RefreshCw className="w-3 h-3" /> Collapse
-                    </button>
-                  </div>
-                )}
+                <p className="text-sm text-slate-700 dark:text-slate-200 truncate mt-0.5" title={e.epicSummary}>{e.epicSummary || "Untitled epic"}</p>
+                {count > 0 && <p className="text-[11px] text-slate-400 mt-0.5">{count} {count === 1 ? "story" : "stories"}</p>}
               </div>
             );
           })}
         </div>
       )}
 
-      {/* Empty state */}
-      {epics.length === 0 && (
-        <div className="text-center py-12 text-slate-400 dark:text-slate-500">
-          <BookOpen className="w-10 h-10 mx-auto mb-3 opacity-40" />
-          <p className="text-sm font-medium">No epics analyzed yet</p>
-          <p className="text-xs mt-1">Load an epic above to build context that improves your story analyses.</p>
+      {!selected ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 py-16 text-center">
+          <BookOpen className="w-10 h-10 mx-auto text-slate-300 dark:text-slate-600 mb-3" />
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-300">No epic open</p>
+          <p className="text-xs text-slate-400 mt-1">Type an epic key above and press Load.</p>
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
+          {/* Header */}
+          <div className="p-5 border-b border-slate-100 dark:border-slate-700 space-y-3">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {selected.browseUrl
+                    ? <a href={selected.browseUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 font-mono text-sm font-bold text-violet-600 dark:text-violet-300 hover:underline">{selected.epicKey}<ExternalLink className="w-3 h-3" /></a>
+                    : <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-300">{selected.epicKey}</span>}
+                  <JiraBoardBadge jiraKey={selected.epicKey} />
+                </div>
+                <h3 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mt-0.5">{selected.epicSummary}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {selected.analyzedAt ? `Analyzed ${ago(selected.analyzedAt)}` : "Not analyzed yet"}
+                  {selected.storiesFetchedAt && <> · Jira synced {ago(selected.storiesFetchedAt)}</>}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => { if (confirm(`Remove ${selected.epicKey} from your saved epics? Stories you analyzed stay in history.`)) { deleteEpic(selected.epicKey); setSelectedKey(""); } }}
+                  disabled={isAnalyzing}
+                  title="Remove this epic from saved epics"
+                  className="p-2 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-red-400 hover:text-red-600 disabled:opacity-50">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={() => syncEpic(selected.epicKey)} disabled={isLoadingSelected || isAnalyzing}
+                  title="Reload stories and statuses from Jira (no AI)"
+                  className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-violet-400 disabled:opacity-50">
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSelected && !isAnalyzing ? "animate-spin" : ""}`} /> Refresh from Jira
+                </button>
+                {models.length > 0 && (
+                  <select value={modelId ?? ""} onChange={(e) => setModelId(e.target.value)} disabled={isAnalyzing}
+                    className="text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500">
+                    {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                )}
+                <button onClick={() => analyze(selected)} disabled={!!analyzingEpic && !isAnalyzing}
+                  className={`flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 rounded-lg text-white disabled:opacity-50 ${isAnalyzing ? "bg-slate-600 hover:bg-red-600" : "bg-violet-600 hover:bg-violet-700"}`}>
+                  {isAnalyzing ? <><Square className="w-3 h-3 fill-current" /> Cancel</> : <><Sparkles className="w-3.5 h-3.5" /> {hasAnalysis || selected.contextBlock ? "Re-analyze" : "Analyze epic"}</>}
+                </button>
+              </div>
+            </div>
+
+            {/* Stats */}
+            {stats.total > 0 && (
+              <div className="flex gap-5 text-xs">
+                <span className="text-slate-500 dark:text-slate-400"><b className="text-slate-800 dark:text-slate-100 text-sm">{stats.total}</b> stories</span>
+                <span className="text-slate-500 dark:text-slate-400"><b className="text-slate-800 dark:text-slate-100 text-sm">{stats.analyzed}</b> analyzed here</span>
+                <span className="text-slate-500 dark:text-slate-400"><b className="text-emerald-600 dark:text-emerald-400 text-sm">{stats.passed}</b> fully passed</span>
+                <span className="text-slate-500 dark:text-slate-400"><b className={`text-sm ${stats.failed ? "text-red-600 dark:text-red-400" : "text-slate-800 dark:text-slate-100"}`}>{stats.failed}</b> with failures</span>
+              </div>
+            )}
+
+            {isAnalyzing && (
+              <div className="flex items-center gap-2 text-xs text-violet-700 dark:text-violet-300 bg-violet-50 dark:bg-violet-500/10 rounded-lg px-3 py-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                {isLoadingSelected ? "Loading stories from Jira…" : streamChars ? `AI is writing the analysis… ${Math.round(streamChars / 1000)}k characters` : "Waiting for the AI…"}
+                <span className="text-violet-400 ml-auto">Big epics can take 1–2 minutes</span>
+              </div>
+            )}
+            {(analyzeError || loadError) && !isAnalyzing && (
+              <div className="flex items-center gap-2 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">
+                <AlertTriangle className="w-3.5 h-3.5" /> {analyzeError ?? loadError}
+              </div>
+            )}
+            {selected.contextBlock && driftCount > 0 && !isAnalyzing && (
+              <div className="flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg px-3 py-2">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>
+                  Jira changed since the analysis:
+                  {drift.added.length > 0 && <> {drift.added.length} new</>}
+                  {drift.changed.length > 0 && <>{drift.added.length ? "," : ""} {drift.changed.length} edited</>}
+                  {drift.removed.length > 0 && <>{drift.added.length || drift.changed.length ? "," : ""} {drift.removed.length} removed</>}
+                  {" "}— the overview and strategy may be out of date.
+                </span>
+                <button onClick={() => analyze(selected)} className="ml-auto font-semibold hover:underline flex-shrink-0">Re-analyze</button>
+              </div>
+            )}
+            {selected.contextBlock && !hasAnalysis && !isAnalyzing && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">This epic was analyzed with an older version. Re-analyze to get the overview and test strategy.</p>
+            )}
+          </div>
+
+          {/* Tabs */}
+          <div className="flex gap-1 px-5 pt-3 border-b border-slate-100 dark:border-slate-700">
+            {TABS.map((t) => (
+              <button key={t.id} onClick={() => setTab(t.id)}
+                className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === t.id
+                  ? "border-violet-600 text-violet-700 dark:text-violet-300"
+                  : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="p-5">
+            {tab === "stories" && (selected.stories ? (
+              <StoriesTab epic={selected} entries={entries} analyzingKeys={analyzingKeys} onOpenStory={onOpenStory} onAnalyzeStory={onAnalyzeStory} />
+            ) : (
+              <div className="text-center py-10">
+                <p className="text-sm text-slate-600 dark:text-slate-300">Story list not loaded for this saved epic.</p>
+                <button onClick={() => syncEpic(selected.epicKey)} disabled={isLoadingSelected}
+                  className="mt-3 inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-600 hover:border-violet-400 text-slate-700 dark:text-slate-200">
+                  <RefreshCw className={`w-4 h-4 ${isLoadingSelected ? "animate-spin" : ""}`} /> Load stories from Jira
+                </button>
+              </div>
+            ))}
+            {tab === "overview" && (hasAnalysis ? <OverviewTab epic={selected} /> : <NeedsAnalysis onAnalyze={() => analyze(selected)} busy={!!analyzingEpic} />)}
+            {tab === "strategy" && (hasAnalysis ? <StrategyTab epic={selected} /> : <NeedsAnalysis onAnalyze={() => analyze(selected)} busy={!!analyzingEpic} />)}
+            {tab === "context" && (selected.contextBlock ? <ContextTab epic={selected} /> : <NeedsAnalysis onAnalyze={() => analyze(selected)} busy={!!analyzingEpic} />)}
+          </div>
         </div>
       )}
     </div>

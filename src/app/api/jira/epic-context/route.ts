@@ -28,18 +28,30 @@ function adfToText(node: AdfNode): string {
   }
 }
 
-export interface JiraEpicStory {
-  key: string;
-  summary: string;
-  description: string;
-  status: string;
-}
+import type { EpicStory } from "@/types";
 
 export interface EpicContextResponse {
   epicKey: string;
   epicSummary: string;
-  stories: JiraEpicStory[];
+  epicDescription: string;
+  browseUrl: string;
+  stories: EpicStory[];
 }
+
+const MAX_STORIES = 300;
+const PAGE = 100;
+
+type JiraIssueRaw = {
+  key: string;
+  fields: {
+    summary?: string;
+    description?: AdfNode | null;
+    status?: { name?: string };
+    issuetype?: { name?: string; subtask?: boolean };
+    assignee?: { displayName?: string } | null;
+  };
+};
+type StrategyResult = { issues: JiraIssueRaw[]; error?: string };
 
 export async function GET(req: NextRequest) {
   // Never cache — Jira data changes frequently and cached error responses cause confusion
@@ -61,123 +73,106 @@ export async function GET(req: NextRequest) {
   const headers = { Authorization: `Basic ${auth}`, Accept: "application/json" };
 
   // ── Step 1: Fetch the ticket and verify it is an Epic ──────────────────────
-  const epicRes = await fetch(
-    `${base}/rest/api/3/issue/${key}?fields=summary,issuetype`,
-    { headers }
-  );
-
+  const epicRes = await fetch(`${base}/rest/api/3/issue/${key}?fields=summary,description,issuetype`, { headers });
   if (!epicRes.ok) {
     if (epicRes.status === 404) return NextResponse.json({ error: `Issue ${key} not found` }, { status: 404, headers: nc });
     if (epicRes.status === 401) return NextResponse.json({ error: "Jira authentication failed" }, { status: 401, headers: nc });
     return NextResponse.json({ error: "Failed to fetch Jira issue" }, { status: epicRes.status, headers: nc });
   }
 
-  const epicData = await epicRes.json() as { fields: Record<string, unknown> };
-  const issueTypeName = String(
-    (epicData.fields.issuetype as Record<string, string>)?.name ?? ""
-  ).toLowerCase();
-
-  if (issueTypeName !== "epic") {
+  const epicData = await epicRes.json() as { fields: { summary?: string; description?: AdfNode | null; issuetype?: { name?: string } } };
+  const typeName = epicData.fields.issuetype?.name ?? "Unknown";
+  if (typeName.toLowerCase() !== "epic") {
     return NextResponse.json(
-      { error: `${key} is a "${(epicData.fields.issuetype as Record<string, string>)?.name ?? "Unknown"}" ticket, not an Epic. Please enter an Epic ticket key.` },
+      { error: `${key} is a "${typeName}" ticket, not an Epic. Please enter an Epic ticket key.` },
       { status: 422, headers: nc }
     );
   }
 
-  const epicSummary = String(epicData.fields.summary ?? "");
+  // ── Step 2: Child issues, all pages ─────────────────────────────────────────
+  // A: Agile epic endpoint · B: parent = KEY (all project types on Jira Cloud)
+  // C: "Epic Link" (older company-managed projects). Merged + deduplicated.
+  const fields = "summary,description,status,issuetype,assignee";
 
-  // ── Step 2: Fetch child stories via 3 parallel strategies ────────────────
-  // Strategy A: Jira Software Agile API — native epic-children endpoint
-  // Strategy B: next-gen / team-managed projects → parent = KEY
-  // Strategy C: classic / company-managed projects → "Epic Link" = KEY
-  // All three run in parallel; failures are silently ignored so one bad field
-  // name doesn't block the other strategies. Results are merged + deduplicated.
-  const searchFields = "summary,description,status,issuetype";
-  const maxResults = 30;
-
-  type JiraIssueRaw = {
-    key: string;
-    fields: {
-      summary?: string;
-      description?: AdfNode | null;
-      status?: { name?: string };
-      issuetype?: { name?: string };
-    };
+  const errorOf = async (res: Response) => {
+    const body = await res.json().catch(() => ({})) as { errorMessages?: string[] };
+    return body.errorMessages?.[0] ?? `HTTP ${res.status}`;
   };
 
-  type StrategyResult = { issues: JiraIssueRaw[]; error?: string };
-
   async function runJql(jql: string): Promise<StrategyResult> {
+    const issues: JiraIssueRaw[] = [];
+    let next: string | undefined;
     try {
-      const res = await fetch(
-        `${base}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${searchFields}`,
-        { headers }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { errorMessages?: string[] };
-        return { issues: [], error: body.errorMessages?.[0] ?? `HTTP ${res.status}` };
-      }
-      const data = await res.json() as { issues?: JiraIssueRaw[] };
-      return { issues: data.issues ?? [] };
+      do {
+        const url = `${base}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${PAGE}&fields=${fields}${next ? `&nextPageToken=${encodeURIComponent(next)}` : ""}`;
+        const res = await fetch(url, { headers });
+        if (!res.ok) return { issues, error: await errorOf(res) };
+        const data = await res.json() as { issues?: JiraIssueRaw[]; nextPageToken?: string; isLast?: boolean };
+        issues.push(...(data.issues ?? []));
+        next = data.isLast === false || data.nextPageToken ? data.nextPageToken : undefined;
+      } while (next && issues.length < MAX_STORIES);
+      return { issues };
     } catch (e) {
-      return { issues: [], error: String(e) };
+      return { issues, error: String(e) };
     }
   }
 
   async function runAgileApi(): Promise<StrategyResult> {
+    const issues: JiraIssueRaw[] = [];
     try {
-      const res = await fetch(
-        `${base}/rest/agile/1.0/epic/${key}/issue?maxResults=${maxResults}&fields=${searchFields}`,
-        { headers }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { errorMessages?: string[] };
-        return { issues: [], error: body.errorMessages?.[0] ?? `HTTP ${res.status}` };
+      for (let startAt = 0; startAt < MAX_STORIES; ) {
+        const res = await fetch(`${base}/rest/agile/1.0/epic/${key}/issue?startAt=${startAt}&maxResults=${PAGE}&fields=${fields}`, { headers });
+        if (!res.ok) return { issues, error: await errorOf(res) };
+        const data = await res.json() as { issues?: JiraIssueRaw[]; total?: number };
+        const page = data.issues ?? [];
+        issues.push(...page);
+        startAt += page.length;
+        if (page.length === 0 || (data.total !== undefined && startAt >= data.total)) break;
       }
-      const data = await res.json() as { issues?: JiraIssueRaw[] };
-      return { issues: data.issues ?? [] };
+      return { issues };
     } catch (e) {
-      return { issues: [], error: String(e) };
+      return { issues, error: String(e) };
     }
   }
 
-  const [agileResult, nextGenResult, classicResult] = await Promise.all([
+  const results = await Promise.all([
     runAgileApi(),
-    runJql(`parent = ${key} ORDER BY created DESC`),
-    runJql(`"Epic Link" = ${key} ORDER BY created DESC`),
+    runJql(`parent = ${key} ORDER BY rank ASC`),
+    runJql(`"Epic Link" = ${key} ORDER BY rank ASC`),
   ]);
 
-  // Merge and deduplicate by key
-  const seen = new Set<string>();
-  const merged: JiraIssueRaw[] = [];
-  for (const issue of [...agileResult.issues, ...nextGenResult.issues, ...classicResult.issues]) {
-    if (!seen.has(issue.key)) {
-      seen.add(issue.key);
-      merged.push(issue);
-    }
+  if (results.every((r) => r.error)) {
+    return NextResponse.json(
+      { error: `Couldn't load the stories of ${key} from Jira: ${results[0].error ?? results[1].error}` },
+      { status: 502, headers: nc }
+    );
   }
 
-  const stories: JiraEpicStory[] = merged.map((issue) => ({
-    key: issue.key,
-    summary: String(issue.fields.summary ?? ""),
-    description: issue.fields.description
-      ? adfToText(issue.fields.description).trim()
-      : "(no description)",
-    status: String(issue.fields.status?.name ?? "Unknown"),
-  }));
+  const seen = new Set<string>();
+  const stories: EpicStory[] = [];
+  // Prefer search/jql results (ADF descriptions) over the agile API (plain-text descriptions).
+  for (const issue of [results[1], results[2], results[0]].flatMap((r) => r.issues)) {
+    if (seen.has(issue.key) || issue.fields.issuetype?.subtask) continue;
+    seen.add(issue.key);
+    const desc = issue.fields.description as AdfNode | string | null | undefined;
+    stories.push({
+      key: issue.key,
+      summary: String(issue.fields.summary ?? ""),
+      description: typeof desc === "string" ? desc.trim() : desc ? adfToText(desc).trim() : "",
+      status: String(issue.fields.status?.name ?? "Unknown"),
+      ...(issue.fields.issuetype?.name ? { type: issue.fields.issuetype.name } : {}),
+      ...(issue.fields.assignee?.displayName ? { assignee: issue.fields.assignee.displayName } : {}),
+    });
+  }
+  // Natural key order (LSINST-2 before LSINST-10)
+  stories.sort((a, b) => Number(a.key.split("-")[1]) - Number(b.key.split("-")[1]));
 
-  return NextResponse.json(
-    {
-      epicKey: key,
-      epicSummary,
-      browseUrl: `${base}/browse/${key}`,
-      stories,
-      _debug: {
-        agile:   { count: agileResult.issues.length,   error: agileResult.error   ?? null },
-        nextGen: { count: nextGenResult.issues.length, error: nextGenResult.error ?? null },
-        classic: { count: classicResult.issues.length, error: classicResult.error ?? null },
-      },
-    },
-    { headers: nc }
-  );
+  const body: EpicContextResponse = {
+    epicKey: key,
+    epicSummary: String(epicData.fields.summary ?? ""),
+    epicDescription: epicData.fields.description ? adfToText(epicData.fields.description).trim() : "",
+    browseUrl: `${base}/browse/${key}`,
+    stories: stories.slice(0, MAX_STORIES),
+  };
+  return NextResponse.json(body, { headers: nc });
 }

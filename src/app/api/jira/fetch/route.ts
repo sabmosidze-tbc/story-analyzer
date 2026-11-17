@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
   try {
     const auth = Buffer.from(`${email}:${token}`).toString("base64");
     const res = await fetch(
-      `${base}/rest/api/3/issue/${key}?fields=summary,description,issuetype,status`,
+      `${base}/rest/api/3/issue/${key}?fields=summary,description,issuetype,status,parent`,
       {
         headers: {
           Authorization: `Basic ${auth}`,
@@ -67,9 +67,14 @@ export async function GET(req: NextRequest) {
     const { fields } = data;
     const summary    = String(fields.summary ?? "");
     const issueType  = String((fields.issuetype as Record<string, string>)?.name ?? "");
+    if (/bug|defect/i.test(issueType)) {
+      return NextResponse.json({ error: `${key} is a ${issueType} card. Only stories can be analyzed.` }, { status: 422 });
+    }
     const status     = String((fields.status as Record<string, string>)?.name ?? "");
     const descRaw    = fields.description ? adfToText(fields.description as AdfNode) : "";
     const meta       = [issueType, status].filter(Boolean).join(" · ");
+    const parent     = fields.parent as { key?: string; fields?: { issuetype?: { name?: string } } } | undefined;
+    const epicKey    = parent?.key && /epic/i.test(parent.fields?.issuetype?.name ?? "") ? parent.key : undefined;
 
     const storyText = [
       `${key}: ${summary}`,
@@ -81,7 +86,7 @@ export async function GET(req: NextRequest) {
       .join("\n")
       .trim();
 
-    return NextResponse.json({ key, summary, storyText, issueType, browseUrl: `${base}/browse/${key}` });
+    return NextResponse.json({ key, summary, storyText, issueType, epicKey, browseUrl: `${base}/browse/${key}` });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to connect to Jira" },

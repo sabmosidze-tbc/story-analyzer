@@ -1,25 +1,24 @@
-import { BookOpen } from "lucide-react";
+import { BookOpen, FlaskConical, ListChecks, CircleHelp } from "lucide-react";
+
+const ITEMS = [
+  { icon: BookOpen, label: "Explanation", hint: "what the story means, in plain words" },
+  { icon: FlaskConical, label: "Scenarios", hint: "test cases designed with EP, BVA and decision tables" },
+  { icon: CircleHelp, label: "Open questions", hint: "gaps and ambiguities to ask about" },
+  { icon: ListChecks, label: "Checklist", hint: "track what you've tested" },
+];
 
 export default function EmptyState() {
   return (
-    <div className="flex flex-col items-center justify-center h-full min-h-[400px] px-6 text-center">
-      <div className="w-20 h-20 rounded-2xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center mb-6 shadow-inner">
-        <BookOpen className="w-10 h-10 text-violet-500 dark:text-violet-400" />
-      </div>
-      <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-3">Analyze your story</h2>
-      <p className="text-slate-500 dark:text-slate-400 max-w-md leading-relaxed text-sm">
-        Paste a Jira story, user story, or requirement above. StoryAnalyzer will generate a
-        QA breakdown with a story explanation, desk-check scenarios, and test suggestions.
-      </p>
-      <div className="mt-8 grid grid-cols-3 gap-4 w-full max-w-sm">
-        {[
-          { icon: "📖", label: "Story Explanation" },
-          { icon: "🔍", label: "Desk Check Scenarios" },
-          { icon: "🧪", label: "Test Suggestions" },
-        ].map(({ icon, label }) => (
-          <div key={label} className="flex flex-col items-center gap-2 p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-            <span className="text-2xl">{icon}</span>
-            <span className="text-xs text-slate-500 text-center leading-tight">{label}</span>
+    <div className="px-1 pt-2">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-3">What you&apos;ll get</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+        {ITEMS.map(({ icon: Icon, label, hint }) => (
+          <div key={label} className="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 dark:border-slate-700/70 bg-white/50 dark:bg-slate-800/40">
+            <Icon className="w-4 h-4 text-violet-500 dark:text-violet-400 mt-0.5 flex-shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-snug">{hint}</p>
+            </div>
           </div>
         ))}
       </div>

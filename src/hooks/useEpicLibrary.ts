@@ -53,15 +53,29 @@ export function useEpicLibrary() {
     });
   }, []);
 
+  /** Store a fresh story list from Jira without re-analyzing (keeps position in the list). */
+  const updateEpicStories = useCallback((epicKey: string, patch: Pick<EpicContext, "stories"> & Partial<Pick<EpicContext, "epicSummary" | "epicDescription" | "browseUrl">>) => {
+    setEpics((prev) => {
+      const next = prev.map((e) => (e.epicKey === epicKey ? { ...e, ...patch, storiesFetchedAt: new Date().toISOString() } : e));
+      saveToStorage(next);
+      return next;
+    });
+  }, []);
+
   const getEpic = useCallback(
     (epicKey: string) => epics.find((e) => e.epicKey === epicKey),
     [epics]
   );
 
+  /** Saved epic for a story: by its Jira parent first, then by the stories included at analysis time. */
   const findEpicByStoryKey = useCallback(
-    (storyKey: string) => epics.find((e) => e.analyzedStoryKeys.includes(storyKey)),
+    (storyKey: string, epicKey?: string) => {
+      const analyzed = epics.filter((e) => e.contextBlock);
+      return (epicKey ? analyzed.find((e) => e.epicKey === epicKey) : undefined) ??
+        analyzed.find((e) => e.analyzedStoryKeys.includes(storyKey));
+    },
     [epics]
   );
 
-  return { epics, saveEpic, deleteEpic, getEpic, findEpicByStoryKey };
+  return { epics, saveEpic, deleteEpic, updateEpicStories, getEpic, findEpicByStoryKey };
 }

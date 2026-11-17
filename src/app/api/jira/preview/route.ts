@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const res = await fetch(
-    `${base}/rest/api/3/issue/${key}?fields=summary`,
+    `${base}/rest/api/3/issue/${key}?fields=summary,issuetype`,
     { headers: { Authorization: `Basic ${auth}`, Accept: "application/json" } }
   );
 
@@ -23,9 +23,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Issue not found" }, { status: res.status });
   }
 
-  const data = await res.json() as { fields?: { summary?: string } };
+  const data = await res.json() as { fields?: { summary?: string; issuetype?: { name?: string } } };
   return NextResponse.json({
     summary: data.fields?.summary ?? "",
+    issueType: data.fields?.issuetype?.name ?? "",
     browseUrl: `${base}/browse/${key}`,
   });
 }

@@ -21,14 +21,16 @@ STRICT RULES:
 - Reference specific story details (feature names, field names, roles, actions, data entities) in every bullet. Never write a generic bullet that could apply to any story.
 - CRITICAL — FRONTEND/UI: Only mention frontend, UI, screens, buttons, forms, browser behavior, or client-side logic if the story text EXPLICITLY describes user interface changes, visual elements, or user interaction. Backend, data processing, calculation, or configuration stories often have zero frontend involvement — in those cases completely omit all frontend/UI content from every section. Never add frontend content as a guess or boilerplate.
 
+INPUT CHECK (do this first):
+Decide whether the input describes software behaviour that can be tested — a user story, acceptance criteria, a bug/feature ticket, or a requirement, in any language. Be lenient: short, terse, badly written or partially complete requirements ARE valid; analyze them and flag the gaps.
+Reject ONLY when there is nothing testable at all: random characters or keyboard mashing, filler/placeholder text (e.g. "test", "asdf", lorem ipsum), a conversation or question unrelated to a requirement, or content with no describable system behaviour.
+If you reject, return ONLY this JSON and nothing else:
+{ "rejected": true, "reason": "One or two plain sentences telling the user why this can't be analyzed and what to provide instead." }
+
 Return ONLY a raw JSON object — do not wrap it in markdown code fences, backticks, or any other formatting. The response must start with { and end with }. Use this exact structure:
 {
   "explanation": {
     "title": "Story Explanation",
-    "content": "markdown content here"
-  },
-  "deskCheck": {
-    "title": "Desk Check Scenarios & Edge Cases",
     "content": "markdown content here"
   },
   "testSuggestions": {
@@ -105,45 +107,11 @@ List specific parts of the application that could be indirectly affected by this
 
 ---
 
-## DESK CHECK SECTION GUIDE
-
-Every scenario below must be story-specific. Do not write generic scenarios that could apply to any feature.
-
-CRITICAL FORMATTING RULE: Every bullet becomes a standalone checklist item. Use a vertical 3-line format: bold scenario name on the first line, specific conditions on the second (indented 2 spaces), and the outcome on the third line starting with → (indented 2 spaces). Bold the key result in the outcome line.
-
-IMPORTANT: The ### Section Name headings (e.g. ### Happy Path Scenarios, ### Negative / Error Scenarios, ### Edge Cases) MUST appear verbatim in the deskCheck.content markdown — they create separate tabs in the checklist UI. Do not omit them.
-
-Format to use:
-- **[Scenario name — concise and specific]**
-  [conditions — key: value pairs, e.g. status: Disbursed, prolongable: False, maxTermMonths: 36]
-  → **[key outcome]** — [supporting detail: fields changed, error message, HTTP status, UI state]
-
-### Happy Path Scenarios
-Write 4–6 happy path scenarios using the format above. Name each scenario after its specific case. Use realistic domain values. Never write a generic scenario.
-
-### Negative / Error Scenarios
-Write 4–6 failure scenarios using the same format. Bold the failure outcome. Include HTTP status code, error message text, and UI behaviour in the detail.
-
-### Edge Cases
-Write 4–6 edge case scenarios. Name the scenario after the boundary or unusual condition. Be explicit in the bolded outcome — "accepted and stored" or "rejected with..." — never vague.
-
-### Permission and Access Control Scenarios
-Only include if the story involves roles or permissions. One bullet per access rule:
-- **[Role] attempts [action]**
-  [conditions — role, resource state, request]
-  → **[what happens]** — [403 returned / redirect / button hidden / action blocked]
-
-### API and Backend Behaviour
-One bullet per API contract point. Cover request shape, response shape, and error codes:
-- **[HTTP METHOD /endpoint — scenario]**
-  [request body / params with specific values]
-  → **[response status]** — [key response fields + side-effects, e.g. DB write, event published]
-
----
-
 ## TEST SUGGESTIONS SECTION GUIDE
 
-Same CRITICAL FORMATTING RULE: every bullet uses the same vertical 3-line format with a bold scenario name and a → outcome line.
+CRITICAL FORMATTING RULE: Every bullet becomes a standalone checklist item. Use a vertical 3-line format: bold name on the first line, specific inputs on the second (indented 2 spaces), and the outcome on the third line starting with → (indented 2 spaces). Bold the key result in the outcome line.
+
+(Functional test scenarios are generated separately with formal test design techniques — do NOT produce desk-check scenarios here.)
 
 ### Unit Tests
 Write 4–6 unit test cases:

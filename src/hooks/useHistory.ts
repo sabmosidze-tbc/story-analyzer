@@ -1,7 +1,8 @@
+
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { StoryEntry, Analysis, ChecklistItem } from "@/types";
+import { StoryEntry, Analysis, ChecklistItem, IssueReport } from "@/types";
 
 const STORAGE_KEY = "story-analyzer-history";
 
@@ -55,10 +56,14 @@ function normalizeEntry(raw: unknown): StoryEntry | null {
     storyText: e.storyText as string,
     ...(typeof e.jiraKey === "string" ? { jiraKey: e.jiraKey } : {}),
     ...(typeof e.jiraUrl === "string" ? { jiraUrl: e.jiraUrl } : {}),
+    ...(typeof e.epicKey === "string" ? { epicKey: e.epicKey } : {}),
     ...(e.jiraPostedSections && typeof e.jiraPostedSections === "object" ? { jiraPostedSections: e.jiraPostedSections as Record<string, string> } : {}),
     analysis: e.analysis as Analysis | undefined,
     ...(Array.isArray(e.checklist) ? { checklist: e.checklist as ChecklistItem[] } : {}),
     ...(Array.isArray(e.checklistPostedCategories) ? { checklistPostedCategories: e.checklistPostedCategories as string[] } : {}),
+    ...(typeof e.checklistRefLabel === "string" ? { checklistRefLabel: e.checklistRefLabel } : {}),
+    ...(typeof e.checklistEnvironment === "string" ? { checklistEnvironment: e.checklistEnvironment } : {}),
+    ...(Array.isArray(e.reports) ? { reports: e.reports as IssueReport[] } : {}),
     isPending: typeof e.isPending === "boolean" ? e.isPending : false,
     createdAt: typeof e.createdAt === "string" ? e.createdAt : new Date().toISOString(),
     updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : new Date().toISOString(),
@@ -128,7 +133,7 @@ export function useHistory() {
   );
 
   const addPendingEntry = useCallback(
-    (storyText: string, jiraKey?: string, jiraUrl?: string): StoryEntry => {
+    (storyText: string, jiraKey?: string, jiraUrl?: string, epicKey?: string): StoryEntry => {
       const now = new Date().toISOString();
       const entry: StoryEntry = {
         id: generateId(),
@@ -136,6 +141,7 @@ export function useHistory() {
         storyText,
         ...(jiraKey ? { jiraKey } : {}),
         ...(jiraUrl ? { jiraUrl } : {}),
+        ...(epicKey ? { epicKey } : {}),
         isPending: true,
         createdAt: now,
         updatedAt: now,
@@ -159,7 +165,7 @@ export function useHistory() {
   );
 
   const updateEntry = useCallback(
-    (id: string, storyText: string, analysis: Analysis, jiraKey?: string, jiraUrl?: string): void => {
+    (id: string, storyText: string, analysis: Analysis, jiraKey?: string, jiraUrl?: string, epicKey?: string): void => {
       persist((prev) => {
         const entry = prev.find((e) => e.id === id);
         if (!entry) return prev;
@@ -173,6 +179,7 @@ export function useHistory() {
           jiraPostedSections: undefined,
           ...(jiraKey !== undefined ? { jiraKey } : {}),
           ...(jiraUrl !== undefined ? { jiraUrl } : {}),
+          ...(epicKey !== undefined ? { epicKey } : {}),
         };
         return [updated, ...prev.filter((e) => e.id !== id)];
       });
@@ -218,6 +225,20 @@ export function useHistory() {
     [persist]
   );
 
+  /** Replace the checklist only if the tester hasn't marked any item yet. */
+  const replaceUntouchedChecklist = useCallback(
+    (id: string, checklist: ChecklistItem[]): void => {
+      persist((prev) =>
+        prev.map((e) =>
+          e.id === id && (!e.checklist || e.checklist.every((i) => i.status === "pending" && !i.ref))
+            ? { ...e, checklist, updatedAt: new Date().toISOString() }
+            : e
+        )
+      );
+    },
+    [persist]
+  );
+
   const markChecklistCategoryPosted = useCallback(
     (id: string, category: string): void => {
       persist((prev) =>
@@ -231,5 +252,26 @@ export function useHistory() {
     [persist]
   );
 
-  return { entries, addEntry, addPendingEntry, finalizeEntry, updateEntry, patchAnalysis, patchChecklist, markJiraPosted, markChecklistCategoryPosted, removeEntry, renameEntry, getEntry };
+  const setChecklistRefLabel = useCallback(
+    (id: string, label: string): void => {
+      persist((prev) => prev.map((e) => (e.id === id ? { ...e, checklistRefLabel: label } : e)));
+    },
+    [persist]
+  );
+
+  const setChecklistEnvironment = useCallback(
+    (id: string, env: string): void => {
+      persist((prev) => prev.map((e) => (e.id === id ? { ...e, checklistEnvironment: env || undefined } : e)));
+    },
+    [persist]
+  );
+
+  const setReports = useCallback(
+    (id: string, reports: IssueReport[]): void => {
+      persist((prev) => prev.map((e) => (e.id === id ? { ...e, reports: reports.length ? reports : undefined } : e)));
+    },
+    [persist]
+  );
+
+  return { entries, addEntry, addPendingEntry, finalizeEntry, updateEntry, patchAnalysis, patchChecklist, replaceUntouchedChecklist, markJiraPosted, markChecklistCategoryPosted, setChecklistRefLabel, setChecklistEnvironment, setReports, removeEntry, renameEntry, getEntry };
 }
