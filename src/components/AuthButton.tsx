@@ -43,7 +43,7 @@ export default function AuthButton() {
 
   return (
     <button
-      onClick={() => signIn("github")}
+      onClick={() => signIn()}
       className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-slate-800 dark:bg-slate-700 hover:bg-slate-700 dark:hover:bg-slate-600 text-white transition-colors"
       title="Sign in with GitHub to unlock Copilot models"
     >

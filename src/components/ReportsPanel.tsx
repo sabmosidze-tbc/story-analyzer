@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { IssueReport, ObservationState } from "@/types";
 import { buildObservationUpdateAdf, OBS_STATE } from "@/lib/bug-report";
 import { Bug, Pencil, Search, ExternalLink, Trash2, RefreshCw, Loader2, Check, X, Wrench, ChevronRight } from "lucide-react";
+import ErrorNotice from "@/components/ErrorNotice";
 
 type Live = Record<string, { status: string; category: string; summary: string }>;
 
@@ -160,8 +161,8 @@ export default function ReportsPanel({ reports, environment, onChange, onEdit, o
                     <button onClick={() => setAction(null)} className="text-xs px-2 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Cancel</button>
                   </div>
                 )}
-                {syncMsg[r.id] && <p className={`mt-1 ml-6 text-xs ${syncMsg[r.id].ok ? "text-emerald-600" : "text-rose-600"}`}>{syncMsg[r.id].text}</p>}
-                {error[r.id] && <p className="mt-1 ml-6 text-xs text-rose-600">{error[r.id]}</p>}
+                {syncMsg[r.id] && (syncMsg[r.id].ok ? <p className="mt-1 ml-6 text-xs text-emerald-600">{syncMsg[r.id].text}</p> : <ErrorNotice message={syncMsg[r.id].text} size="sm" className="mt-1 ml-6" />)}
+                {error[r.id] && <ErrorNotice message={error[r.id]} size="sm" className="mt-1 ml-6" />}
               </li>
             );
           })}

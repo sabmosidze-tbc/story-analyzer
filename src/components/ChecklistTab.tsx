@@ -1034,7 +1034,7 @@ export default function ChecklistTab({ analysis, checklist, storyTitle = "", jir
                       disabled={sStatus === "posting"}
                       title={sectionJiraError[cat] ?? `Post a results comment on ${jiraKey} with the Excel file attached`}
                       className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg disabled:opacity-60 ${
-                        sStatus === "error" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" : "bg-blue-600 hover:bg-blue-700 text-white"
+                        sStatus === "error" ? "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-100" : "bg-blue-600 hover:bg-blue-700 text-white"
                       }`}
                     >
                       {sStatus === "posting" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : sStatus === "error" ? <AlertCircle className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}

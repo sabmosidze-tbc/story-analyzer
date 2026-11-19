@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Loader2, Sparkles, X, ExternalLink, Ticket, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 import { useCopilotModels } from "@/hooks/useCopilotModels";
 import JiraBoardBadge from "@/components/JiraBoardBadge";
+import ErrorNotice from "@/components/ErrorNotice";
 
 const JIRA_KEY_RE = /^[A-Z][A-Z0-9]{1,9}-\d+$/;
 
@@ -192,10 +193,7 @@ export default function StoryInput({
           </div>
 
           {jiraError ? (
-            <div className="mt-3 flex items-start gap-3 rounded-xl border border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 p-3.5">
-              <AlertCircle className="w-5 h-5 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-red-700 dark:text-red-300">{jiraError}</p>
-            </div>
+            <ErrorNotice message={jiraError} className="mt-3" />
           ) : preview?.status === "found" ? (
             <div className="mt-3 flex items-start gap-3 rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/70 dark:bg-emerald-500/10 p-3.5">
               <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0 mt-0.5" />

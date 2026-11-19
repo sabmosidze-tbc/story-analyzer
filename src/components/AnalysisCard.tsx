@@ -5,6 +5,7 @@ import { pdfSafe, renderMarkdownPdf } from "@/lib/pdf-text";
 import ReactMarkdown from "react-markdown";
 import { Copy, Check, FileText, Pencil, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import MarkdownEditor from "./MarkdownEditor";
+import ErrorNotice from "@/components/ErrorNotice";
 
 const PDF_MARGIN   = 48;
 const PDF_LINE_H   = 14;
@@ -234,7 +235,7 @@ export default function AnalysisCard({
       </div>
 
       {postError && (
-        <div className="px-6 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 text-xs text-red-600">{postError}</div>
+        <div className="px-6 py-2 border-b border-slate-200 dark:border-slate-700"><ErrorNotice message={postError} size="sm" /></div>
       )}
 
       {isLoading && (

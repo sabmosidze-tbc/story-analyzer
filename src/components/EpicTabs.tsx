@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, Check, ChevronDown, Copy, Database, HelpCircle, Layers, ListChecks, Loader2, Play, RotateCcw, Search, ShieldAlert, Sparkles, Wrench } from "lucide-react";
 import type { EpicContext, EpicStory, StoryEntry } from "@/types";
 import { epicDrift, isActiveStatus, isDoneStatus, storyProgress, strategyMarkdown, type RiskLevel, type StoryProgress } from "@/lib/epic";
+import ErrorNotice from "@/components/ErrorNotice";
 
 // ── Small shared bits ────────────────────────────────────────────────────────
 
@@ -236,7 +237,7 @@ export function StoriesTab({ epic, entries, analyzingKeys, onOpenStory, onAnalyz
                     {s.assignee && <span>· {s.assignee}</span>}
                   </div>
                 ) : null}
-                {errors[s.key] && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{errors[s.key]}</p>}
+                {errors[s.key] && <ErrorNotice message={errors[s.key]} size="sm" className="mt-1" />}
               </div>
               <div className="flex items-center gap-3 flex-shrink-0 pt-0.5">
                 <ProgressCell p={p} />

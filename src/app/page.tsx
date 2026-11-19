@@ -24,6 +24,7 @@ import { useEpicLibrary } from "@/hooks/useEpicLibrary";
 import ReportsPanel from "@/components/ReportsPanel";
 import { Analysis, StructuredBlock, type IssueReport } from "@/types";
 import { Check, Download, Cpu, RefreshCw, Loader2, X, ExternalLink, BookOpen } from "lucide-react";
+import ErrorNotice from "@/components/ErrorNotice";
 
 // ── Progressive JSON section extractor for SSE streaming ────────────────────
 function tryExtractJsonObject(text: string, key: string): unknown {
@@ -812,11 +813,7 @@ const { entries, addPendingEntry, finalizeEntry, updateEntry, patchAnalysis, pat
           )}
 
           {/* Error */}
-          {error && (
-            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 rounded-xl px-5 py-4 text-sm">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
+          {error && <ErrorNotice message={error} />}
 
           {/* Analysis results — shown as soon as first section arrives */}
           {currentAnalysis ? (

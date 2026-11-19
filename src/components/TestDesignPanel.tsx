@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import ErrorNotice from "@/components/ErrorNotice";
 import {
   AlertTriangle, ArrowRight, Check, ChevronRight, CircleHelp, FlaskConical, Loader2, RefreshCw, Sparkles, X,
 } from "lucide-react";
@@ -371,7 +372,7 @@ export default function TestDesignPanel({ design, loading, error, onGenerate }: 
           Builds a test model with equivalence partitions, boundary values, decision tables and state transitions,
           then writes scenarios and checks that every case is covered.
         </p>
-        {error && <p className="text-sm text-rose-500 mt-3">{error}</p>}
+        {error && <ErrorNotice message={error} className="mt-3" />}
         <button
           onClick={onGenerate}
           className="mt-5 inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white shadow-sm transition-colors"

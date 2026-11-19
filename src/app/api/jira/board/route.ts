@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { boardUrl, customValue, getIssue, jiraFail, jiraFor, projectBoards } from "@/lib/jira-server";
 
 export interface JiraBoardInfo {
   id: number;
@@ -13,65 +14,41 @@ export interface JiraBoardResponse {
   sprint: { name: string; state: string } | null;
 }
 
-interface AgileBoard { id: number; name: string; type: string }
-interface AgileSprint { name: string; state: string; originBoardId?: number }
-
-const BOARDS_TTL_MS = 10 * 60 * 1000;
-const g = globalThis as typeof globalThis & {
-  __jiraProjectBoards?: Map<string, { at: number; boards: AgileBoard[] }>;
-};
-const boardCache = (g.__jiraProjectBoards ??= new Map());
+interface Sprint { id?: number; name: string; state: string; boardId?: number; originBoardId?: number }
 
 export async function GET(req: NextRequest) {
-  const base  = process.env.JIRA_BASE_URL;
-  const email = process.env.JIRA_EMAIL;
-  const token = process.env.JIRA_API_TOKEN;
-  if (!base || !email || !token) {
-    return NextResponse.json({ error: "Jira not configured" }, { status: 503 });
-  }
-
   const key = req.nextUrl.searchParams.get("key")?.toUpperCase();
   if (!key || !/^[A-Z]{2,10}-\d+$/.test(key)) {
     return NextResponse.json({ error: "Invalid Jira key" }, { status: 400 });
   }
+  const r = await jiraFor(req);
+  if (!r.ok) return r.res;
+  const { jira } = r;
   const project = key.split("-")[0];
-  const headers = { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`, Accept: "application/json" };
 
   try {
-    const cached = boardCache.get(project);
-    const boardsPromise: Promise<AgileBoard[]> = cached && Date.now() - cached.at < BOARDS_TTL_MS
-      ? Promise.resolve(cached.boards)
-      : fetch(`${base}/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(project)}&maxResults=50`, { headers })
-          .then(async (r) => (r.ok ? ((await r.json()) as { values?: AgileBoard[] }).values ?? [] : []))
-          .then((boards) => {
-            boardCache.set(project, { at: Date.now(), boards });
-            return boards;
-          });
-
-    const [boards, issueRes] = await Promise.all([
-      boardsPromise,
-      fetch(`${base}/rest/agile/1.0/issue/${key}?fields=sprint,closedSprints`, { headers }),
+    const [boards, issue] = await Promise.all([
+      projectBoards(jira, project).catch(() => []),
+      getIssue(jira, key, ["customfield_10020"]),
     ]);
 
-    let sprint: AgileSprint | null = null;
-    if (issueRes.ok) {
-      const issue = (await issueRes.json()) as { fields?: { sprint?: AgileSprint | null; closedSprints?: AgileSprint[] } };
-      sprint = issue.fields?.sprint ?? issue.fields?.closedSprints?.at(-1) ?? null;
-    } else if (issueRes.status === 404) {
-      return NextResponse.json({ error: "Issue not found" }, { status: 404 });
-    }
+    // The Sprint field lists every sprint the issue was in; prefer the open one, else the latest
+    const raw = customValue(issue.fields, "customfield_10020");
+    const sprints = ((Array.isArray(raw) ? raw : []) as Sprint[]).slice().sort((a, b) => (b.id ?? 0) - (a.id ?? 0));
+    const sprint = sprints.find((s) => s.state === "active") ?? sprints.find((s) => s.state === "future") ?? sprints[0] ?? null;
 
     // Prefer the board that owns the issue's sprint; otherwise list the project's boards
-    const owning = sprint?.originBoardId ? boards.filter((b) => b.id === sprint!.originBoardId) : [];
+    const owner = sprint?.originBoardId ?? sprint?.boardId;
+    const owning = owner ? boards.filter((b) => b.id === owner) : [];
     const chosen = owning.length > 0 ? owning : boards;
 
     const body: JiraBoardResponse = {
       key,
-      boards: chosen.map((b) => ({ id: b.id, name: b.name, type: b.type, url: `${base}/secure/RapidBoard.jspa?rapidView=${b.id}` })),
+      boards: chosen.map((b) => ({ id: b.id, name: b.name, type: b.type, url: boardUrl(jira, b.id) })),
       sprint: sprint ? { name: sprint.name, state: sprint.state } : null,
     };
     return NextResponse.json(body);
-  } catch {
-    return NextResponse.json({ error: "Failed to load board info" }, { status: 502 });
+  } catch (e) {
+    return jiraFail(e, "Failed to load board info");
   }
 }

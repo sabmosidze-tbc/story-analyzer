@@ -5,6 +5,7 @@ import { StoryEntry } from "@/types";
 import { Pencil, Trash2, Check, X, Plus, ChevronLeft, BookOpen, Sun, Moon, LogOut, Search, Sparkles, Loader2, Bug } from "lucide-react";
 import { useSession, signOut } from "next-auth/react";
 import { useTheme } from "@/hooks/useTheme";
+import JiraConnect from "@/components/JiraConnect";
 
 interface SidebarProps {
   entries: StoryEntry[];
@@ -240,6 +241,7 @@ export default function Sidebar({ entries, selectedId, onSelect, onNew, onReport
 
         {/* Footer */}
         <div className="p-3 border-t border-white/5">
+          <JiraConnect />
           <div className="flex items-center gap-2.5 p-2 rounded-xl bg-white/[0.03]">
             {user?.image ? (
               // eslint-disable-next-line @next/next/no-img-element

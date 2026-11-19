@@ -8,9 +8,10 @@ import { loadBug } from "@/lib/bug-import";
 import { buildBugAdf, buildObservationAdf, findingsOf, withFindings, newFinding, MAIN_FINDING, expGroup, baseGroup, type Finding, type ReportDraft } from "@/lib/bug-report";
 import { loadEnvs, saveEnvs } from "@/lib/environments";
 import { ApiRequestEditor, RequestChip, RequestDetails } from "./ApiRequests";
+import ErrorNotice from "@/components/ErrorNotice";
 import {
   X, Bug, Search, Loader2, Plus, Trash2, Sparkles, Undo2, Upload, Film, FileText,
-  ImageIcon, AlertCircle, ExternalLink, RotateCw, Check, Code2, ChevronDown,   Link2, Paperclip, Pencil, Download,
+  ImageIcon, ExternalLink, RotateCw, Check, Code2, ChevronDown,   Link2, Paperclip, Pencil, Download,
 } from "lucide-react";
 
 const MAX_FILE = 250 * 1024 * 1024;
@@ -950,7 +951,7 @@ export default function ReportIssueModal({ kind: initialKind, initial, storyKey,
                 )}
               </div>}
             </div>
-            {metaError && <p className="text-xs text-rose-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> {metaError}</p>}
+            {metaError && <ErrorNotice message={metaError} size="sm" />}
             {!meta && !metaError && project && <p className="text-xs text-slate-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Loading {project} fields…</p>}
             {meta?.unsupported.length ? <p className="text-xs text-amber-700 dark:text-amber-300">This project requires fields the app can&apos;t fill yet: {meta.unsupported.join(", ")}. Jira may reject the bug.</p> : null}
             {meta && (
@@ -1024,7 +1025,7 @@ export default function ReportIssueModal({ kind: initialKind, initial, storyKey,
       {/* Footer */}
       <div className="flex items-center gap-2 px-5 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/40">
         <div className="flex-1 min-w-0 text-xs truncate">
-          {error ? <span className="text-rose-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {error}</span>
+          {error ? <ErrorNotice message={error} size="sm" />
             : notice ? <span className="text-amber-600 dark:text-amber-300">{notice}</span>
             : missing.length ? <span className="text-slate-400">Still needed: {missing.join(", ")}</span>
             : unchanged ? <span className="text-slate-400">No changes yet</span>

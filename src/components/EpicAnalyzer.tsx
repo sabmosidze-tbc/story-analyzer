@@ -8,6 +8,7 @@ import { useCopilotModels } from "@/hooks/useCopilotModels";
 import JiraBoardBadge from "@/components/JiraBoardBadge";
 import { epicDrift, parseEpicOutput, storyHash, storyProgress } from "@/lib/epic";
 import { ContextTab, NeedsAnalysis, OverviewTab, StoriesTab, StrategyTab } from "@/components/EpicTabs";
+import ErrorNotice from "@/components/ErrorNotice";
 
 interface LoadedEpic { key: string; summary: string; description: string; browseUrl?: string; stories: EpicStory[] }
 type Tab = "stories" | "overview" | "strategy" | "context";
@@ -254,10 +255,8 @@ export default function EpicAnalyzer({ entries, analyzingKeys, onOpenStory, onAn
           </div>
           {(autoCheckError || (loadError && !selected)) && (
             // Floats under the input so the layout doesn't shift
-            <div role="alert" className="epic-flow-in absolute left-0 top-full mt-2 z-20 flex items-start gap-2 max-w-full sm:w-72 rounded-lg border border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-950/90 px-3 py-2 text-xs text-red-700 dark:text-red-300 shadow-lg backdrop-blur">
-              <span className="absolute -top-1 left-5 w-2 h-2 rotate-45 border-l border-t border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-950/90" />
-              <AlertTriangle className="w-3.5 h-3.5 mt-px flex-shrink-0" />
-              <span>{autoCheckError ?? loadError}</span>
+            <div className="epic-flow-in absolute left-0 top-full mt-2 z-20 w-full sm:w-96 max-w-[calc(100vw-2rem)]">
+              <ErrorNotice message={autoCheckError ?? loadError} className="shadow-lg" />
             </div>
           )}
         </div>
@@ -370,11 +369,7 @@ export default function EpicAnalyzer({ entries, analyzingKeys, onOpenStory, onAn
                 <span className="text-violet-400 ml-auto">Big epics can take 1–2 minutes</span>
               </div>
             )}
-            {(analyzeError || loadError) && !isAnalyzing && (
-              <div className="flex items-center gap-2 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">
-                <AlertTriangle className="w-3.5 h-3.5" /> {analyzeError ?? loadError}
-              </div>
-            )}
+            {(analyzeError || loadError) && !isAnalyzing && <ErrorNotice message={analyzeError ?? loadError} />}
             {selected.contextBlock && driftCount > 0 && !isAnalyzing && (
               <div className="flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg px-3 py-2">
                 <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />

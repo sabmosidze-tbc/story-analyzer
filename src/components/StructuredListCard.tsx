@@ -245,7 +245,7 @@ export default function StructuredListCard({
                   : jiraStatus === "posted"
                   ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400"
                   : jiraStatus === "error"
-                  ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400"
+                  ? "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300"
                   : "text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 bg-slate-100 dark:bg-slate-700 hover:bg-blue-50 dark:hover:bg-blue-900/20"
               }`}
             >
