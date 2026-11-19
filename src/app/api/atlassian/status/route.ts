@@ -16,6 +16,6 @@ export async function GET(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const userId = await getSessionUserId(req);
   if (!userId) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  await disconnect(req.nextUrl.origin, userId);
+  await disconnect(userId);
   return NextResponse.json({ connected: false });
 }

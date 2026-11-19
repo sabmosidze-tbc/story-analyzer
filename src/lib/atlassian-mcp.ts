@@ -12,19 +12,33 @@ export const MCP_URL = "https://mcp.atlassian.com/v2/mcp?tools=all";
 export const CALLBACK_PATH = "/api/atlassian/callback";
 
 // ── Local store (.data/ is git-ignored) ──────────────────────────────────────
-// clients: one dynamic registration per app address (port), shared by everyone on this machine
-// users:   each GitHub user's own Atlassian sign-in, per app address
+// clients: one dynamic registration per app address (port), used only to sign in
+// users:   each GitHub user's own Atlassian sign-in, shared by every port. `client` is the
+//          registration that issued the tokens, so refreshing works from any port.
 type Site = { cloudId: string; url: string; name?: string };
-type UserRec = { tokens?: OAuthTokens; verifier?: string; site?: Site };
+type UserRec = { tokens?: OAuthTokens; verifier?: string; site?: Site; client?: OAuthClientInformationMixed };
 type Store = { clients: Record<string, OAuthClientInformationMixed>; users: Record<string, UserRec> };
 
 const FILE = path.join(DATA_DIR, "atlassian.json");
 let writing: Promise<unknown> = Promise.resolve();
 
+/** Older stores kept sign-ins per `userId@origin`; fold them into one per user. */
+function migrate(s: Store): Store {
+  for (const [k, rec] of Object.entries(s.users)) {
+    const at = k.indexOf("@http");
+    if (at < 0) continue;
+    const userId = k.slice(0, at);
+    const origin = k.slice(at + 1);
+    if (rec.tokens && !s.users[userId]?.tokens) s.users[userId] = { ...rec, client: rec.client ?? s.clients[origin] };
+    delete s.users[k];
+  }
+  return s;
+}
+
 async function readStore(): Promise<Store> {
   try {
     const s = JSON.parse(await fs.readFile(FILE, "utf8")) as Partial<Store>;
-    return { clients: s.clients ?? {}, users: s.users ?? {} };
+    return migrate({ clients: s.clients ?? {}, users: s.users ?? {} });
   } catch { return { clients: {}, users: {} }; }
 }
 function update(fn: (s: Store) => void): Promise<void> {
@@ -38,12 +52,10 @@ function update(fn: (s: Store) => void): Promise<void> {
   return next;
 }
 
-const userKey = (userId: string, origin: string) => `${userId}@${origin}`;
-
 export class AtlassianProvider implements OAuthClientProvider {
   authUrl: URL | null = null;
   constructor(private origin: string, private userId: string) {}
-  private get key() { return userKey(this.userId, this.origin); }
+  private get key() { return this.userId; }
 
   get redirectUrl() { return `${this.origin}${CALLBACK_PATH}`; }
   get clientMetadata(): OAuthClientMetadata {
@@ -55,17 +67,32 @@ export class AtlassianProvider implements OAuthClientProvider {
       token_endpoint_auth_method: "none",
     };
   }
-  async clientInformation() { return (await readStore()).clients[this.origin]; }
+  async clientInformation() {
+    const s = await readStore();
+    const u = s.users[this.key];
+    return u?.tokens && u.client ? u.client : s.clients[this.origin];
+  }
   async saveClientInformation(c: OAuthClientInformationMixed) { await update((s) => { s.clients[this.origin] = c; }); }
   async tokens() { return (await readStore()).users[this.key]?.tokens; }
-  async saveTokens(t: OAuthTokens) { await update((s) => { s.users[this.key] = { ...s.users[this.key], tokens: t }; }); }
+  async saveTokens(t: OAuthTokens) {
+    await update((s) => {
+      const u = s.users[this.key];
+      const client = u?.tokens && u.client ? u.client : s.clients[this.origin];
+      s.users[this.key] = { ...u, tokens: t, client };
+    });
+  }
   async saveCodeVerifier(v: string) { await update((s) => { s.users[this.key] = { ...s.users[this.key], verifier: v }; }); }
   async codeVerifier() { return (await readStore()).users[this.key]?.verifier ?? ""; }
   async redirectToAuthorization(url: URL) { this.authUrl = url; }
   async invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
     await update((s) => {
-      if (scope === "all" || scope === "client") delete s.clients[this.origin];
-      if (scope === "all" || scope === "tokens") s.users[this.key] = { ...s.users[this.key], tokens: undefined, site: undefined };
+      const u = s.users[this.key];
+      if (scope === "all" || scope === "client") {
+        // Forget whichever registration clientInformation() handed out
+        if (u?.tokens && u.client) s.users[this.key] = { ...u, client: undefined, tokens: undefined, site: undefined };
+        else delete s.clients[this.origin];
+      }
+      if (scope === "all" || scope === "tokens") s.users[this.key] = { ...s.users[this.key], tokens: undefined, site: undefined, client: undefined };
       if (scope === "all" || scope === "verifier") s.users[this.key] = { ...s.users[this.key], verifier: undefined };
     });
     dropClient(this.key);
@@ -74,13 +101,13 @@ export class AtlassianProvider implements OAuthClientProvider {
 
 export const newTransport = (provider: AtlassianProvider) => new StreamableHTTPClientTransport(new URL(MCP_URL), { authProvider: provider });
 
-export async function disconnect(origin: string, userId: string) {
-  await update((s) => { delete s.users[userKey(userId, origin)]; });
-  dropClient(userKey(userId, origin));
+export async function disconnect(userId: string) {
+  await update((s) => { delete s.users[userId]; });
+  dropClient(userId);
 }
 
-export async function isConnected(origin: string, userId: string): Promise<Site | false> {
-  const u = (await readStore()).users[userKey(userId, origin)];
+export async function isConnected(userId: string): Promise<Site | false> {
+  const u = (await readStore()).users[userId];
   return u?.tokens ? u.site ?? { cloudId: "", url: "" } : false;
 }
 
@@ -178,7 +205,7 @@ export async function jiraFor(req: Request): Promise<{ ok: true; jira: Jira } | 
   const userId = await getSessionUserId(req);
   if (!userId) return { ok: false, res: NextResponse.json({ error: "Sign in with GitHub to use StoryAnalyzer." }, { status: 401 }) };
   const origin = new URL(req.url).origin;
-  const key = userKey(userId, origin);
+  const key = userId;
   if (!(await readStore()).users[key]?.tokens) return { ok: false, res: NextResponse.json(NOT_CONNECTED, { status: 401 }) };
   const provider = new AtlassianProvider(origin, userId);
 

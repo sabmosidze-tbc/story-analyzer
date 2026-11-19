@@ -33,6 +33,7 @@ On first run the app creates a `.data/` folder (ignored by git). It holds a rand
 
 ### Notes
 - A GitHub sign-in lasts **8 hours**.
+- The app works on any port. If 3000 is busy and it starts on 3001, both sign-ins still work.
 - Jira connects through Atlassian's official MCP server, so no Atlassian app or API token is needed. If your company has more than one Jira site, set `JIRA_BASE_URL` to pick one.
 - Attachments can be added from the app but not deleted; remove them in Jira.
 - For the team owner: the shared GitHub OAuth App must have **Enable Device Flow** ticked. Its Client ID is public and lives in `src/lib/github-device.ts`.

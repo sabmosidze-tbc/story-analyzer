@@ -24,7 +24,7 @@ No `.env.local` and no tokens are needed.
 
 - **Login cookie key** — `src/lib/local-secret.ts` creates a random `AUTH_SECRET` in `.data/` on first run.
 - **GitHub** — device flow with the shared, public OAuth Client ID. The user's GitHub token drives their own Copilot.
-- **Jira** — "Connect Jira" (sidebar) runs OAuth against Atlassian's MCP server. Tokens are stored per user and per origin in `.data/atlassian.json` and refreshed automatically.
+- **Jira** — "Connect Jira" (sidebar) runs OAuth against Atlassian's MCP server. Tokens are stored per user in `.data/atlassian.json` and refreshed automatically. One sign-in works on every port (`localhost:3000`, `:3001`, …).
 
 `.data/` is git-ignored. Deleting it signs everyone out on that machine.
 
@@ -103,6 +103,5 @@ Nothing is stored in a database. A fresh clone or another browser starts empty.
 ## Known limitations
 
 - History is per browser; it is not shared between users or devices.
-- Each new origin (port/host) needs Jira connected again.
 - GitHub sign-in lasts 8 hours.
 - Attachments can't be deleted from the app.
